@@ -147,6 +147,9 @@ export default class MinecraftClient extends HTMLElement {
     const jarPath = "/str/client.jar";
 
     const mcJarUrl = new URL("mc.jar", import.meta.url).href;
+    const forgeLibUrl = new URL("minecraftforgelib.jar", import.meta.url).href;
+    const lwjglUrl = new URL("lwjgl-2.9.0.jar", import.meta.url).href;
+    const lwjglUtilUrl = new URL("lwjgl_util-2.9.0.jar", import.meta.url).href;
 
     await downloadFileToCheerpJ(
       mcJarUrl,
@@ -157,6 +160,21 @@ export default class MinecraftClient extends HTMLElement {
       }
     );
 
+    await downloadFileToCheerpJ(
+      forgeLibUrl,
+      "/str/minecraftforgelib.jar"
+    );
+
+    await downloadFileToCheerpJ(
+      lwjglUrl,
+      "/str/lwjgl-2.9.0.jar"
+    );
+
+    await downloadFileToCheerpJ(
+      lwjglUtilUrl,
+      "/str/lwjgl_util-2.9.0.jar"
+    );
+
     this.#progress.style.display = 'none';
 
     this.#canvas.style.display = 'unset';
@@ -164,7 +182,7 @@ export default class MinecraftClient extends HTMLElement {
 
     const exitCode = await cheerpjRunMain(
       "StupidForgeLauncher",
-      `/app/minecraftforgelib.jar:/app/lwjgl-2.9.0.jar:/app/lwjgl_util-2.9.0.jar:${jarPath}`,
+      `/str/minecraftforgelib.jar:/str/lwjgl-2.9.0.jar:/str/lwjgl_util-2.9.0.jar:${jarPath}`,
       "--username", username,
       "--session", "0",
       "--version", "1.6.4",
