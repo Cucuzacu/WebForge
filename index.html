@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en" style="width:100%;height:100%;overflow:hidden;background-color:#FFF;color:black;font-family:sans-serif;">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebForge</title>
+    <script src="https://cjrtnc.leaningtech.com/4.2/loader.js"></script>
+    <style>
+      #launcher-menu button {
+        padding: 10px 20px;
+        margin-top: 15px;
+        cursor: pointer;
+        background: #4CAF50;
+        color: black;
+        font-size: 16px;
+      }
+      #launcher-menu button:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+      #status {
+        margin-top: 15px;
+        font-size: 14px;
+        color: #000;
+      }
+      #game-container {
+        display: none;
+        width: 100%;
+        height: 100%;
+        justify-content: center;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div id="launcher-menu">
+      <h2>WebForge Launcher - Made by Cucuzacu</h2>
+
+      <div>
+        <label for="username-input">Username: </label>
+        <br>
+        <input type="text" id="username-input" value="Player">
+      </div>
+      <br>
+
+      <div>
+        <label for="mod-upload">Select Mods (.jar): </label>
+        <br><br>
+        <input type="file" id="mod-upload" multiple accept=".jar,.zip">
+      </div>
+      
+      <button id="upload-btn">1. Upload Mods</button>
+      <br>
+      <button id="start-btn">2. Start Game</button>
+
+      <div id="status">Initializing Cheerpj...</div>
+    </div>
+
+    <div id="game-container">
+      <minecraft-client style="width: 854px; height: 480px;"></minecraft-client>
+    </div>
+
+    <script type="module">
+      import MinecraftClient from "./minecraft-web.js";
+
+      const statusText = document.getElementById("status");
+      const modInput = document.getElementById("mod-upload");
+      const uploadBtn = document.getElementById("upload-btn");
+      const startBtn = document.getElementById("start-btn");
+      const menu = document.getElementById("launcher-menu");
+      const gameContainer = document.getElementById("game-container");
+
+      await cheerpjInit({
+        version: 8,
+        javaProperties: [
+          "java.library.path=/app/natives", 
+          "org.lwjgl.util.NoChecks=true", 
+          "fml.ignoreInvalidMinecraftCertificates=true"
+        ],
+      });
+
+      statusText.innerText = "Ready. You can upload mods or start.";
+
+      uploadBtn.addEventListener("click", async () => {
+        if (modInput.files.length === 0) {
+          alert("Please select at least one mod file!");
+          return;
+        }
+
+        uploadBtn.disabled = true;
+        statusText.innerText = "Preparing fs...";
+
+        try {
+          const lib = await cheerpjRunLibrary(""); 
+          const Files = await lib.java.nio.file.Files;
+          const Paths = await lib.java.nio.file.Paths;
+          const StandardCopyOption = await lib.java.nio.file.StandardCopyOption;
+
+          const modsDir = await Paths.get("/files/game/mods");
+          await Files.createDirectories(modsDir);
+
+          for (const file of modInput.files) {
+            statusText.innerText = `Uploading: ${file.name}...`;
+
+            const arrayBuffer = await file.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+
+            const strPath = `/str/${file.name}`;
+            cheerpOSAddStringFile(strPath, uint8Array);
+
+            const source = await Paths.get(strPath);
+            const target = await Paths.get(`/files/game/mods/${file.name}`);
+            
+            await Files.copy(source, target, [StandardCopyOption.REPLACE_EXISTING]);
+            console.log(`Successfully moved ${file.name} to /files/game/mods/`);
+          }
+
+          statusText.innerText = "All mods uploaded! Ready to start.";
+          uploadBtn.innerText = "Uploaded ✓";
+        } catch (error) {
+          console.error("Upload failed:", error);
+          statusText.innerText = "Error uploading mods. See console.";
+        } finally {
+          uploadBtn.disabled = false;
+        }
+      });
+
+      const usernameInput = document.getElementById("username-input");
+
+      startBtn.addEventListener("click", () => {
+        menu.style.display = "none";
+        gameContainer.style.display = "flex";
+  
+        MinecraftClient.register();
+  
+        const clientElement = document.querySelector("minecraft-client");
+        const username = usernameInput.value || "Player";
+        clientElement.run(username);
+      });
+    </script>
+  </body>
+</html>
