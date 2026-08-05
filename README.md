@@ -6,7 +6,7 @@
 
 
 
-WebForge is a port of Minecraft 1.6.4 forge to the web browser. It can load simple mods, such as \[this](https://www.curseforge.com/minecraft/mc-mods/sprinting-key). The Aether II crashes because of some unsupported gl functions.
+WebForge is a port of Minecraft 1.6.4 forge to the web browser. It can load simple mods, such as \[this](https://www.curseforge.com/minecraft/mc-mods/sprinting-key) . The Aether II crashes because of some unsupported gl functions.
 
 
 
