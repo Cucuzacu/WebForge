@@ -12,3 +12,6 @@ WebForge is a port of Minecraft 1.6.4 forge to the web browser. It can load simp
 
 Yep, that's all I have to say. Words can't explain what a demo can! Play it [here](https://cucuzacu.github.io/WebForge).
 
+
+
+Join the [Discord server](https://discord.gg/QCAEMtnqws).
