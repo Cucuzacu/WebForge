@@ -53,9 +53,11 @@ glCtx.attachShader(program, vertexShader);
 glCtx.attachShader(program, fragmentShader);
 glCtx.linkProgram(program);
 glCtx.useProgram(program);
-var vertexBuffer = glCtx.createBuffer();
-var colorBuffer = glCtx.createBuffer();
-var texCoordBuffer = glCtx.createBuffer();
+const MAX_BUFFER_SIZE = 1024 * 1024 * 8;
+const singleVBO = glCtx.createBuffer();
+glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
+glCtx.bufferData(glCtx.ARRAY_BUFFER, MAX_BUFFER_SIZE, glCtx.DYNAMIC_DRAW);
+const batchBuffer = new Uint8Array(MAX_BUFFER_SIZE);
 var vertexPosition = glCtx.getAttribLocation(program, "aVertexPosition");
 var colorLocation = glCtx.getAttribLocation(program, "aColor");
 var texCoord = glCtx.getAttribLocation(program, "aTexCoord");
@@ -113,24 +115,57 @@ var immediateModeData = {
 	colorPos: 0,
 	currentColor: [1.0, 1.0, 1.0, 1.0]
 };
-var verboseLog = true;
+var verboseLog = false;
 var frameCount = 0;
+const scratchMat0 = glMatrix.mat4.create();
+const multScratch = glMatrix.mat4.create();
+const MAX_QUAD_VERTICES = 1000000;
+const indexData = new Uint32Array((MAX_QUAD_VERTICES / 4) * 6);
+for (let i = 0, idx = 0; i < MAX_QUAD_VERTICES; i += 4) {
+	indexData[idx++] = i;
+	indexData[idx++] = i + 1;
+	indexData[idx++] = i + 2;
+	indexData[idx++] = i;
+	indexData[idx++] = i + 2;
+	indexData[idx++] = i + 3;
+}
+var quadIndexBuffer = glCtx.createBuffer();
+glCtx.bindBuffer(glCtx.ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
+glCtx.bufferData(glCtx.ELEMENT_ARRAY_BUFFER, indexData, glCtx.STATIC_DRAW);
 // Set to a non-zero value to stop after a certain number of frames
 var frameLimit = 0;
 var currentActiveTexture = 0x84C0;
 var currentClientActiveTexture = 0x84C0;
-// NOTE: These initializes to identity
-var projMatrixStack = [glMatrix.mat4.create()];
-var modelViewMatrixStack = [glMatrix.mat4.create()];
-var textureMatrixStack = [glMatrix.mat4.create()];
+let matricesDirty = true;
+class MatrixStack
+{
+	constructor()
+	{
+		this.data = new Float32Array(16 * 64);
+		this.views = [];
+		for(let i = 0; i < 64; i++) this.views.push(new Float32Array(this.data.buffer, i * 16 * 4, 16));
+		this.ptr = 0;
+		glMatrix.mat4.identity(this.views[0]);
+	}
+	getTop() { return this.views[this.ptr]; }
+	push()
+	{
+		this.views[this.ptr + 1].set(this.views[this.ptr]);
+		this.ptr++;
+	}
+	pop() { this.ptr--; }
+}
+var projMatrixStack = new MatrixStack();
+var modelViewMatrixStack = new MatrixStack();
+var textureMatrixStack = new MatrixStack();
 var curMatrixStack = modelViewMatrixStack;
 function getCurMatrixTop()
 {
-	return curMatrixStack[curMatrixStack.length - 1];
+	return curMatrixStack.getTop();
 }
 function setCurMatrixTop(m)
 {
-	curMatrixStack[curMatrixStack.length - 1] = m;
+	curMatrixStack.getTop().set(m);
 }
 function getEffectiveStride(data) {
 	if (data.stride !== 0) return data.stride;
@@ -142,40 +177,76 @@ function getEffectiveStride(data) {
 	}
 	return data.size * bytesPerElement;
 }
-function uploadDataImpl(buf, buffer, attributeLocation, size, type, stride)
+let wasmHeapView = null;
+function getWasmHeapView(buffer)
 {
-	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, buffer);
-	glCtx.bufferData(glCtx.ARRAY_BUFFER, buf, glCtx.STATIC_DRAW);
-	glCtx.vertexAttribPointer(attributeLocation, size, type, type != glCtx.FLOAT, stride, 0);
-	glCtx.enableVertexAttribArray(attributeLocation);
+	if (!wasmHeapView || wasmHeapView.buffer !== buffer)
+		wasmHeapView = new Uint8Array(buffer);
+	return wasmHeapView;
 }
-function uploadData(v, data, buffer, attributeLocation, count) {
-	if(data.enabled) {
-		var effectiveStride = getEffectiveStride(data);
-		var buf = data.buf;
-		if(buf == null) {
-			assert(v && data.pointer);
-			buf = new Uint8Array(v.buffer, data.pointer, effectiveStride * count);
-		}
-		uploadDataImpl(buf, buffer, attributeLocation, data.size, data.type, data.stride);
-		
+function uploadAllData(v, count, capVert, capCol, capTex)
+{
+	let offset = 0;
+	let vOffset = 0, cOffset = 0, tOffset = 0;
+
+	let vd = capVert || vertexData;
+	let cd = capCol || colorData;
+	let td = capTex || texCoordData;
+
+	let heapView = v ? getWasmHeapView(v.buffer) : null;
+
+	if (vd.enabled) {
+		let bytes = getEffectiveStride(vd) * count;
+		let src = vd.buf || heapView.subarray(vd.pointer, vd.pointer + bytes);
+		batchBuffer.set(src, offset);
+		vOffset = offset;
+		offset += bytes;
+	}
+	if (cd.enabled) {
+		let bytes = getEffectiveStride(cd) * count;
+		let src = cd.buf || heapView.subarray(cd.pointer, cd.pointer + bytes);
+		batchBuffer.set(src, offset);
+		cOffset = offset;
+		offset += bytes;
+	}
+	if (td.enabled) {
+		let bytes = getEffectiveStride(td) * count;
+		let src = td.buf || heapView.subarray(td.pointer, td.pointer + bytes);
+		batchBuffer.set(src, offset);
+		tOffset = offset;
+		offset += bytes;
+	}
+
+	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
+	glCtx.bufferSubData(glCtx.ARRAY_BUFFER, 0, batchBuffer, 0, offset);
+
+	if (vd.enabled) {
+		glCtx.vertexAttribPointer(vertexPosition, vd.size, vd.type, vd.type !== glCtx.FLOAT, vd.stride, vOffset);
+		glCtx.enableVertexAttribArray(vertexPosition);
+	} else glCtx.disableVertexAttribArray(vertexPosition);
+
+	if (cd.enabled) {
+		glCtx.vertexAttribPointer(colorLocation, cd.size, cd.type, cd.type !== glCtx.FLOAT, cd.stride, cOffset);
+		glCtx.enableVertexAttribArray(colorLocation);
+	} else glCtx.disableVertexAttribArray(colorLocation);
+
+	if (td.enabled) {
+		glCtx.vertexAttribPointer(texCoord, td.size, td.type, td.type !== glCtx.FLOAT, td.stride, tOffset);
+		glCtx.enableVertexAttribArray(texCoord);
 	} else {
-		glCtx.disableVertexAttribArray(attributeLocation);
-		if (attributeLocation === texCoord) {
-			glCtx.vertexAttrib2f(texCoord, 0, 0);
-		}
+		glCtx.disableVertexAttribArray(texCoord);
+		glCtx.vertexAttrib2f(texCoord, 0, 0);
 	}
 }
 
 function captureData(v, data, count)
 {
 	var ret = { enabled: data.enabled, size: data.size, type: data.type, stride: data.stride, pointer: 0, buf: null };
-	if(data.enabled)
-	{
+	if(data.enabled) {
 		var effectiveStride = getEffectiveStride(data);
-		var buf = new Uint8Array(v.buffer, data.pointer, effectiveStride * count);
-		// Capture the current data
-		ret.buf = new Uint8Array(buf);
+		var len = effectiveStride * count;
+		ret.buf = new Uint8Array(len);
+		ret.buf.set(new Uint8Array(v.buffer, data.pointer, len));
 	}
 	return ret;
 }
@@ -202,22 +273,21 @@ function callList(listId)
 }
 function drawArraysImpl(mode, first, count)
 {
-	// TODO: Conditional
-	glCtx.uniformMatrix4fv(mvLocation, false, modelViewMatrixStack[modelViewMatrixStack.length - 1]);
-	glCtx.uniformMatrix4fv(projLocation, false, projMatrixStack[projMatrixStack.length - 1]);
-	assert(first == 0);
-	// We can render each quad a separate GL_TRIANGLE_FAN
-	if(mode == 7/*QUADS*/ && (count % 4) == 0)
-	{
-		for(var i=0;i<count;i+=4)
-			glCtx.drawArrays(glCtx.TRIANGLE_FAN, i, 4);
+	if (matricesDirty) {
+		glCtx.uniformMatrix4fv(mvLocation, false, modelViewMatrixStack.getTop());
+		glCtx.uniformMatrix4fv(projLocation, false, projMatrixStack.getTop());
+		matricesDirty = false;
 	}
-	else if(mode == glCtx.LINES || mode == glCtx.LINE_STRIP || mode == glCtx.TRIANGLE_STRIP || mode == glCtx.TRIANGLE_FAN)
-	{
+	assert(first == 0);
+	
+	if(mode == 7/*QUADS*/ && (count % 4) == 0) {
+		glCtx.bindBuffer(glCtx.ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
+		glCtx.drawElements(glCtx.TRIANGLES, (count / 4) * 6, glCtx.UNSIGNED_INT, 0);
+	}
+	else if(mode == glCtx.LINES || mode == glCtx.LINE_STRIP || mode == glCtx.TRIANGLE_STRIP || mode == glCtx.TRIANGLE_FAN || mode == glCtx.TRIANGLES) {
 		glCtx.drawArrays(mode, first, count);
 	}
-	else
-	{
+	else {
 		debugger;
 	}
 }
@@ -228,12 +298,7 @@ function pushDrawArraysInList(list, v, mode, first, count)
 }
 function drawArraysInList(mode, first, count, capturedVertexData, capturedColorData, capturedTexCoordData)
 {
-	// Upload vertex data
-	uploadData(null, capturedVertexData, vertexBuffer, vertexPosition, count);
-	// Upload color data
-	uploadData(null, capturedColorData, colorBuffer, colorLocation, count);
-	// Upload tex coord data
-	uploadData(null, capturedTexCoordData, texCoordBuffer, texCoord, count);
+	uploadAllData(null, count, capturedVertexData, capturedColorData, capturedTexCoordData);
 	drawArraysImpl(mode, first, count);
 }
 // Fix the sampler to texture unit 0
@@ -368,13 +433,14 @@ function getTextureData(v, memPtr, width, height, format, type)
     const size = width * height * bpp;
     const sourceBuf = new Uint8Array(v.buffer, ptr, size);
 
-    if (format === 0x80E1 /* GL_BGRA */) {
+    if (format === 0x80E1 /* GL_BGRA */)
+    {
         const newBuf = new Uint8Array(size);
-        for (let i = 0; i < size; i += 4) {
-            newBuf[i]     = sourceBuf[i + 2]; // R
-            newBuf[i + 1] = sourceBuf[i + 1]; // G
-            newBuf[i + 2] = sourceBuf[i];     // B
-            newBuf[i + 3] = sourceBuf[i + 3]; // A
+        newBuf.set(sourceBuf);
+        const u32 = new Uint32Array(newBuf.buffer, newBuf.byteOffset, size / 4);
+        for (let i = 0; i < u32.length; i++) {
+            const p = u32[i];
+            u32[i] = (p & 0xFF00FF00) | ((p & 0xFF) << 16) | ((p >> 16) & 0xFF);
         }
         return newBuf;
     }
@@ -584,33 +650,29 @@ function Java_org_lwjgl_opengl_GL11_nglGetIntegerv(lib, id, memPtr, funcPtr)
 {
 	checkNoList(curList);
 	var v = lib.getJNIDataView();
-	var buf = new Int32Array(v.buffer, Number(memPtr), 4);
-	if (id == /*GL_VIEWPORT*/0xba2)
-	{
-		buf[0] = 0;
-		buf[1] = 0;
-		buf[2] = 1000;
-		buf[3] = 500;
-	}
-	else
-	{
+	var ptr = Number(memPtr);
+	
+	if (id == /*GL_VIEWPORT*/0xba2) {
+		v.setInt32(ptr, 0, true);
+		v.setInt32(ptr + 4, 0, true);
+		v.setInt32(ptr + 8, 1000, true);
+		v.setInt32(ptr + 12, 500, true);
+	} else {
 		try {
 			var val = glCtx.getParameter(id);
 			if (typeof val === 'number') {
-				buf[0] = val;
+				v.setInt32(ptr, val, true);
 			} else if (Array.isArray(val) || ArrayBuffer.isView(val)) {
 				for (var i = 0; i < val.length; i++) {
-					buf[i] = val[i];
+					v.setInt32(ptr + i * 4, val[i], true);
 				}
 			} else {
-				buf[0] = 16;
+				v.setInt32(ptr, 16, true);
 			}
 		} catch (e) {
-			buf[0] = 16;
+			v.setInt32(ptr, 16, true);
 		}
-		if (verboseLog) {
-			console.log("glGetInteger", id, buf[0]);
-		}
+		if (verboseLog) console.log("glGetInteger", id, val);
 	}
 }
 
@@ -679,25 +741,24 @@ function Java_org_lwjgl_opengl_GL11_nglLoadIdentity(lib, funcPtr)
 {
 	checkNoList(curList);
 	glMatrix.mat4.identity(getCurMatrixTop());
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglOrtho(lib, left, right, bottom, top, nearVal, farVal, funcPtr)
 {
 	checkNoList(curList);
 	var m = getCurMatrixTop();
-	var o = glMatrix.mat4.create();
-	glMatrix.mat4.ortho(o, left, right, bottom, top, nearVal, farVal);
-	var out = glMatrix.mat4.create();
-	setCurMatrixTop(glMatrix.mat4.multiply(out, m, o));
+	glMatrix.mat4.ortho(scratchMat0, left, right, bottom, top, nearVal, farVal);
+	glMatrix.mat4.multiply(m, m, scratchMat0);
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglTranslatef(lib, x, y, z, funcPtr)
 {
-	if(curList)
-		return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglTranslatef);
+	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglTranslatef);
 	var m = getCurMatrixTop();
-	var out = glMatrix.mat4.create();
-	setCurMatrixTop(glMatrix.mat4.translate(out, m, glMatrix.vec3.fromValues(x, y, z)));
+	glMatrix.mat4.translate(m, m, [x, y, z]);
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglViewport(lib, x, y, width, height, funcPtr)
@@ -745,11 +806,11 @@ function Java_org_lwjgl_opengl_GL11_nglGenTextures(lib, n, memPtr, funcPtr)
 {
 	checkNoList(curList);
 	var v = lib.getJNIDataView();
-	var buf = new Int32Array(v.buffer, Number(memPtr), n);
-	for(var i=0;i<n;i++)
-	{
+	var ptr = Number(memPtr);
+	
+	for(var i=0; i<n; i++) {
 		var id = textureObjects.length;
-		buf[i] = id;
+		v.setInt32(ptr + i*4, id, true);
 		textureObjects[id] = glCtx.createTexture();
 	}
 }
@@ -839,17 +900,8 @@ function Java_org_lwjgl_opengl_GL11_nglVertexPointer(lib, size, type, stride, me
 function Java_org_lwjgl_opengl_GL11_nglDrawArrays(lib, mode, first, count, funcPtr)
 {
 	var v = lib.getJNIDataView();
-	if(curList)
-	{
-		// Capture client state at this point in time
-		return pushDrawArraysInList(curList, v, mode, first, count);
-	}
-	// Upload vertex data
-	uploadData(v, vertexData, vertexBuffer, vertexPosition, count);
-	// Upload color data
-	uploadData(v, colorData, colorBuffer, colorLocation, count);
-	// Upload tex coord data
-	uploadData(v, texCoordData, texCoordBuffer, texCoord, count);
+	if(curList) return pushDrawArraysInList(curList, v, mode, first, count);
+	uploadAllData(v, count, null, null, null);
 	drawArraysImpl(mode, first, count);
 }
 
@@ -870,7 +922,10 @@ function Java_org_lwjgl_opengl_GL11_nglDisableClientState(lib, v, funcPtr) {
 function Java_org_lwjgl_opengl_GL11_nglColor4f(lib, r, g, b, a, funcPtr)
 {
 	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglColor4f);
-	immediateModeData.currentColor = [r, g, b, a];
+	immediateModeData.currentColor[0] = r;
+	immediateModeData.currentColor[1] = g;
+	immediateModeData.currentColor[2] = b;
+	immediateModeData.currentColor[3] = a;
 	glCtx.vertexAttrib4f(colorLocation, r, g, b, a);
 }
 
@@ -910,7 +965,10 @@ function Java_org_lwjgl_opengl_GL11_nglEndList(lib, funcPtr)
 function Java_org_lwjgl_opengl_GL11_nglColor3f(lib, r, g, b, funcPtr)
 {
 	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglColor3f);
-	immediateModeData.currentColor = [r, g, b, 1.0];
+	immediateModeData.currentColor[0] = r;
+	immediateModeData.currentColor[1] = g;
+	immediateModeData.currentColor[2] = b;
+	immediateModeData.currentColor[3] = 1.0;
 	glCtx.vertexAttrib4f(colorLocation, r, g, b, 1.0);
 }
 
@@ -945,16 +1003,16 @@ function Java_org_lwjgl_opengl_GL11_nglCullFace(lib, mode, funcPtr)
 
 function Java_org_lwjgl_opengl_GL11_nglPushMatrix(lib, funcPtr)
 {
-	if(curList)
-		return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglPushMatrix);
-	curMatrixStack.push(glMatrix.mat4.clone(curMatrixStack[curMatrixStack.length - 1]));
+	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglPushMatrix);
+	curMatrixStack.push();
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglPopMatrix(lib, funcPtr)
 {
-	if(curList)
-		return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglPopMatrix);
+	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglPopMatrix);
 	curMatrixStack.pop();
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglMultMatrixf(lib, memPtr, funcPtr)
@@ -962,17 +1020,21 @@ function Java_org_lwjgl_opengl_GL11_nglMultMatrixf(lib, memPtr, funcPtr)
 	checkNoList(curList);
 	var m = getCurMatrixTop();
 	var v = lib.getJNIDataView();
-	var buf = new Float32Array(v.buffer, Number(memPtr), 16);
-	var out = glMatrix.mat4.create();
-	setCurMatrixTop(glMatrix.mat4.multiply(out, m, buf));
+	var ptr = Number(memPtr);
+	
+	for (var i = 0; i < 16; i++) {
+		multScratch[i] = v.getFloat32(ptr + i * 4, true);
+	}
+	glMatrix.mat4.multiply(m, m, multScratch);
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglRotatef(lib, angle, x, y, z, funcPtr)
 {
 	checkNoList(curList);
 	var m = getCurMatrixTop();
-	var out = glMatrix.mat4.create();
-	setCurMatrixTop(glMatrix.mat4.rotate(out, m, angle * Math.PI / 180.0, glMatrix.vec3.fromValues(x, y, z)));
+	glMatrix.mat4.rotate(m, m, angle * Math.PI / 180.0, [x, y, z]);
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglDepthMask(lib, a, funcPtr)
@@ -1001,11 +1063,10 @@ function Java_org_lwjgl_opengl_GL11_nglCopyTexSubImage2D(lib, target, level, xof
 
 function Java_org_lwjgl_opengl_GL11_nglScalef(lib, x, y, z, funcPtr)
 {
-	if(curList)
-		return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglScalef);
+	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglScalef);
 	var m = getCurMatrixTop();
-	var out = glMatrix.mat4.create();
-	setCurMatrixTop(glMatrix.mat4.scale(out, m, glMatrix.vec3.fromValues(x, y, z)));
+	glMatrix.mat4.scale(m, m, [x, y, z]);
+	matricesDirty = true;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglCallLists(lib, n, type, memPtr, funcPtr)
@@ -1041,22 +1102,16 @@ function Java_org_lwjgl_opengl_GL11_nglGetFloatv(lib, a, memPtr, funcPtr)
 {
 	checkNoList(curList);
 	var v = lib.getJNIDataView();
-	var buf = new Float32Array(v.buffer, Number(memPtr), 16);
-	if(a == /*GL_MODELVIEW_MATRIX*/0xba6)
-	{
-		var m = modelViewMatrixStack[modelViewMatrixStack.length - 1];
-		for(var i=0;i<16;i++)
-			buf[i] = m[i];
-	}
-	else if(a == /*GL_PROJECTION_MATRIX*/0xba7)
-	{
-		var m = projMatrixStack[projMatrixStack.length - 1];
-		for(var i=0;i<16;i++)
-			buf[i] = m[i];
-	}
-	else if(verboseLog)
-	{
-		console.log("glGetFloat "+a);
+	var ptr = Number(memPtr);
+	
+	if(a == /*GL_MODELVIEW_MATRIX*/0xba6) {
+		var mat = modelViewMatrixStack.getTop();
+		for(var i=0; i<16; i++) v.setFloat32(ptr + i*4, mat[i], true);
+	} else if(a == /*GL_PROJECTION_MATRIX*/0xba7) {
+		var mat = projMatrixStack.getTop();
+		for(var i=0; i<16; i++) v.setFloat32(ptr + i*4, mat[i], true);
+	} else if(verboseLog) {
+		console.log("glGetFloat " + a);
 	}
 }
 
@@ -1071,14 +1126,15 @@ function Java_org_lwjgl_opengl_GL11_nglGetTexLevelParameteriv(lib, target, level
 {
 	checkNoList(curList);
 	var v = lib.getJNIDataView();
-	var buf = new Int32Array(v.buffer, Number(memPtr), 1);
+	var ptr = Number(memPtr);
 	var boundId = boundTextures[activeTextureUnit];
+	
 	if (pname === 0x1000 /* GL_TEXTURE_WIDTH */) {
-		buf[0] = textureWidths[boundId] || 0; 
+		v.setInt32(ptr, textureWidths[boundId] || 0, true);
 	} else if (pname === 0x1001 /* GL_TEXTURE_HEIGHT */) {
-		buf[0] = textureHeights[boundId] || 0;
+		v.setInt32(ptr, textureHeights[boundId] || 0, true);
 	} else {
-		buf[0] = 0;
+		v.setInt32(ptr, 0, true);
 	}
 }
 
@@ -1217,14 +1273,45 @@ function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 	checkNoList(curList);
 	var count = immediateModeData.vertexPos / 3;
 
-	if (immediateModeData.texCoordPos > 0) {
-		uploadDataImpl(immediateModeData.texCoordBuf.subarray(0, immediateModeData.texCoordPos), texCoordBuffer, texCoord, 2, glCtx.FLOAT, 2 * 4);
-	} else {
-		glCtx.disableVertexAttribArray(texCoord);
+	let offset = 0;
+	let vBytes = immediateModeData.vertexPos * 4;
+	let cBytes = immediateModeData.colorPos * 4;
+	let tBytes = immediateModeData.texCoordPos * 4;
+	
+	let vOffset = offset;
+	batchBuffer.set(new Uint8Array(immediateModeData.vertexBuf.buffer, 0, vBytes), offset);
+	offset += vBytes;
+	
+	let cOffset = offset;
+	batchBuffer.set(new Uint8Array(immediateModeData.colorBuf.buffer, 0, cBytes), offset);
+	offset += cBytes;
+	
+	let tOffset = offset;
+	if (tBytes > 0)
+	{
+		batchBuffer.set(new Uint8Array(immediateModeData.texCoordBuf.buffer, 0, tBytes), offset);
+		offset += tBytes;
 	}
-
-	uploadDataImpl(immediateModeData.vertexBuf.subarray(0, immediateModeData.vertexPos), vertexBuffer, vertexPosition, 3, glCtx.FLOAT, 3 * 4);
-	uploadDataImpl(immediateModeData.colorBuf.subarray(0, immediateModeData.colorPos), colorBuffer, colorLocation, 4, glCtx.FLOAT, 4 * 4);
+	
+	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
+	glCtx.bufferSubData(glCtx.ARRAY_BUFFER, 0, batchBuffer, 0, offset);
+	
+	glCtx.vertexAttribPointer(vertexPosition, 3, glCtx.FLOAT, false, 0, vOffset);
+	glCtx.enableVertexAttribArray(vertexPosition);
+	
+	glCtx.vertexAttribPointer(colorLocation, 4, glCtx.FLOAT, false, 0, cOffset);
+	glCtx.enableVertexAttribArray(colorLocation);
+	
+	if (tBytes > 0)
+	{
+		glCtx.vertexAttribPointer(texCoord, 2, glCtx.FLOAT, false, 0, tOffset);
+		glCtx.enableVertexAttribArray(texCoord);
+	}
+	else
+	{
+		glCtx.disableVertexAttribArray(texCoord);
+		glCtx.vertexAttrib2f(texCoord, 0, 0);
+	}
 
 	drawArraysImpl(immediateModeData.mode, 0, count);
 }
