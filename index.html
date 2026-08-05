@@ -73,9 +73,6 @@
 
       await cheerpjInit({
         version: 8,
-
-        overrideDocumentBase: new URL(".", window.location.href).href,
-        
         javaProperties: [
           "java.library.path=/app/natives", 
           "org.lwjgl.util.NoChecks=true", 
@@ -120,7 +117,7 @@
           }
 
           statusText.innerText = "All mods uploaded! Ready to start.";
-          uploadBtn.innerText = "Uploaded";
+          uploadBtn.innerText = "Uploaded ✓";
         } catch (error) {
           console.error("Upload failed:", error);
           statusText.innerText = "Error uploading mods. See console.";
