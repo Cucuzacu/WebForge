@@ -119,6 +119,17 @@ var verboseLog = false;
 var frameCount = 0;
 const scratchMat0 = glMatrix.mat4.create();
 const multScratch = glMatrix.mat4.create();
+const scratchVec3 = new Float32Array(3);
+const MAX_TEXTURE_SIZE = 1024 * 1024 * 16;
+const scratchTextureBuf = new Uint8Array(MAX_TEXTURE_SIZE);
+const immediateVertexView = new Uint8Array(immediateModeData.vertexBuf.buffer);
+const immediateColorView = new Uint8Array(immediateModeData.colorBuf.buffer);
+const immediateTexCoordView = new Uint8Array(immediateModeData.texCoordBuf.buffer);
+const CAPTURE_SLAB_SIZE = 1024 * 1024 * 32;
+const captureSlab = new Uint8Array(CAPTURE_SLAB_SIZE);
+let captureSlabOffset = 0;
+const swapBufferClosure = function(f) { requestAnimationFrame(f); };
+const glStateCache = {};
 const MAX_QUAD_VERTICES = 1000000;
 const indexData = new Uint32Array((MAX_QUAD_VERTICES / 4) * 6);
 for (let i = 0, idx = 0; i < MAX_QUAD_VERTICES; i += 4) {
@@ -197,22 +208,31 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 
 	if (vd.enabled) {
 		let bytes = getEffectiveStride(vd) * count;
-		let src = vd.buf || heapView.subarray(vd.pointer, vd.pointer + bytes);
-		batchBuffer.set(src, offset);
+		if (vd.buf) {
+			batchBuffer.set(vd.buf, offset);
+		} else {
+			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[vd.pointer + i];
+		}
 		vOffset = offset;
 		offset += bytes;
 	}
 	if (cd.enabled) {
 		let bytes = getEffectiveStride(cd) * count;
-		let src = cd.buf || heapView.subarray(cd.pointer, cd.pointer + bytes);
-		batchBuffer.set(src, offset);
+		if (cd.buf) {
+			batchBuffer.set(cd.buf, offset);
+		} else {
+			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[cd.pointer + i];
+		}
 		cOffset = offset;
 		offset += bytes;
 	}
 	if (td.enabled) {
 		let bytes = getEffectiveStride(td) * count;
-		let src = td.buf || heapView.subarray(td.pointer, td.pointer + bytes);
-		batchBuffer.set(src, offset);
+		if (td.buf) {
+			batchBuffer.set(td.buf, offset);
+		} else {
+			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[td.pointer + i];
+		}
 		tOffset = offset;
 		offset += bytes;
 	}
@@ -385,28 +405,50 @@ function keyHandler(e)
 {
 	// Convert to LinuxKeycodes.java keycodes
 	// https://github.com/LWJGL/lwjgl/blob/master/src/java/org/lwjgl/opengl/LinuxKeycodes.java
-	let keyCode = e.keyCode || e.key.charCodeAt(0); // most map to ASCII
-	switch (e.key) {
-		case "Escape": // note will have to press twice if pointer is locked
-			keyCode = 0xff1b;
-			break;
-		case "Shift":
-			keyCode = 0xffe1;
-			break;
-		case "Control":
-			keyCode = 0xffe3;
-			break;
-		case "Meta":
-			keyCode = 0xffe7;
-			break;
-		case "Alt":
-			keyCode = 0xffe9;
-			break;
+	let keyCode = 0;
+	if (e.key.length === 1)
+	{
+		keyCode = e.key.charCodeAt(0);
 	}
-	console.log(e.key, keyCode);
-
+	else
+	{
+		switch (e.key) {
+			case "Escape": keyCode = 0xff1b; break;
+			case "Enter": keyCode = 0xff0d; break;
+			case "Backspace": keyCode = 0xff08; break;
+			case "Tab": keyCode = 0xff09; break;
+			case "Shift": keyCode = (e.code === "ShiftRight") ? 0xffe2 : 0xffe1; break;
+			case "Control": keyCode = (e.code === "ControlRight") ? 0xffe4 : 0xffe3; break;
+			case "Alt": keyCode = (e.code === "AltRight") ? 0xffea : 0xffe9; break;
+			case "Meta": keyCode = 0xffe7; break;
+			case "CapsLock": keyCode = 0xffe5; break;
+			case "ArrowUp": keyCode = 0xff52; break;
+			case "ArrowDown": keyCode = 0xff54; break;
+			case "ArrowLeft": keyCode = 0xff51; break;
+			case "ArrowRight": keyCode = 0xff53; break;
+			case "PageUp": keyCode = 0xff55; break;
+			case "PageDown": keyCode = 0xff56; break;
+			case "Home": keyCode = 0xff50; break;
+			case "End": keyCode = 0xff57; break;
+			case "Insert": keyCode = 0xff63; break;
+			case "Delete": keyCode = 0xffff; break;
+			case "F1": keyCode = 0xffbe; break;
+			case "F2": keyCode = 0xffbf; break;
+			case "F3": keyCode = 0xffc0; break;
+			case "F4": keyCode = 0xffc1; break;
+			case "F5": keyCode = 0xffc2; break;
+			case "F6": keyCode = 0xffc3; break;
+			case "F7": keyCode = 0xffc4; break;
+			case "F8": keyCode = 0xffc5; break;
+			case "F9": keyCode = 0xffc6; break;
+			case "F10": keyCode = 0xffc7; break;
+			case "F11": keyCode = 0xffc8; break;
+			case "F12": keyCode = 0xffc9; break;
+			default: keyCode = e.keyCode; break;
+		}
+	}
 	eventQueue.push({ type: e.type, keyCode });
-	e.preventDefault();
+	if (e.key !== "F11") e.preventDefault();
 }
 glCanvas.addEventListener("keydown", keyHandler);
 glCanvas.addEventListener("keyup", keyHandler);
@@ -435,14 +477,15 @@ function getTextureData(v, memPtr, width, height, format, type)
 
     if (format === 0x80E1 /* GL_BGRA */)
     {
-        const newBuf = new Uint8Array(size);
-        newBuf.set(sourceBuf);
-        const u32 = new Uint32Array(newBuf.buffer, newBuf.byteOffset, size / 4);
+        const u8Source = new Uint8Array(v.buffer, ptr, size);
+        scratchTextureBuf.set(u8Source, 0);
+        
+        const u32 = new Uint32Array(scratchTextureBuf.buffer, scratchTextureBuf.byteOffset, size / 4);
         for (let i = 0; i < u32.length; i++) {
             const p = u32[i];
             u32[i] = (p & 0xFF00FF00) | ((p & 0xFF) << 16) | ((p >> 16) & 0xFF);
         }
-        return newBuf;
+        return scratchTextureBuf.subarray(0, size);
     }
 
     return sourceBuf;
@@ -712,10 +755,7 @@ function Java_org_lwjgl_opengl_LinuxContextImplementation_nSwapBuffers()
 		console.warn("Stopping");
 		return new Promise(function(){});
 	}
-	return new Promise(function(f, r)
-	{
-		requestAnimationFrame(f);
-	});
+	return new Promise(swapBufferClosure);
 }
 
 function Java_org_lwjgl_opengl_LinuxEvent_getPending()
@@ -757,7 +797,8 @@ function Java_org_lwjgl_opengl_GL11_nglTranslatef(lib, x, y, z, funcPtr)
 {
 	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglTranslatef);
 	var m = getCurMatrixTop();
-	glMatrix.mat4.translate(m, m, [x, y, z]);
+	scratchVec3[0] = x; scratchVec3[1] = y; scratchVec3[2] = z;
+	glMatrix.mat4.translate(m, m, scratchVec3);
 	matricesDirty = true;
 }
 
@@ -1033,7 +1074,8 @@ function Java_org_lwjgl_opengl_GL11_nglRotatef(lib, angle, x, y, z, funcPtr)
 {
 	checkNoList(curList);
 	var m = getCurMatrixTop();
-	glMatrix.mat4.rotate(m, m, angle * Math.PI / 180.0, [x, y, z]);
+	scratchVec3[0] = x; scratchVec3[1] = y; scratchVec3[2] = z;
+	glMatrix.mat4.rotate(m, m, angle * Math.PI / 180.0, scratchVec3);
 	matricesDirty = true;
 }
 
@@ -1065,7 +1107,8 @@ function Java_org_lwjgl_opengl_GL11_nglScalef(lib, x, y, z, funcPtr)
 {
 	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglScalef);
 	var m = getCurMatrixTop();
-	glMatrix.mat4.scale(m, m, [x, y, z]);
+	scratchVec3[0] = x; scratchVec3[1] = y; scratchVec3[2] = z;
+	glMatrix.mat4.scale(m, m, scratchVec3);
 	matricesDirty = true;
 }
 
@@ -1279,17 +1322,17 @@ function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 	let tBytes = immediateModeData.texCoordPos * 4;
 	
 	let vOffset = offset;
-	batchBuffer.set(new Uint8Array(immediateModeData.vertexBuf.buffer, 0, vBytes), offset);
+	batchBuffer.set(immediateVertexView.subarray(0, vBytes), offset);
 	offset += vBytes;
 	
 	let cOffset = offset;
-	batchBuffer.set(new Uint8Array(immediateModeData.colorBuf.buffer, 0, cBytes), offset);
+	batchBuffer.set(immediateColorView.subarray(0, cBytes), offset);
 	offset += cBytes;
 	
 	let tOffset = offset;
 	if (tBytes > 0)
 	{
-		batchBuffer.set(new Uint8Array(immediateModeData.texCoordBuf.buffer, 0, tBytes), offset);
+		batchBuffer.set(immediateTexCoordView.subarray(0, tBytes), offset);
 		offset += tBytes;
 	}
 	
