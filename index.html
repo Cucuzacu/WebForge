@@ -5,6 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>WebForge</title>
+    <link rel="icon" type="image/x-icon" href="./favicon.ico">
     <script src="https://cjrtnc.leaningtech.com/4.2/loader.js"></script>
     <style>
       #launcher-menu button {
@@ -72,10 +73,12 @@
       const menu = document.getElementById("launcher-menu");
       const gameContainer = document.getElementById("game-container");
 
+      const nativesPath = `/app${new URL("natives", import.meta.url).pathname}`;
+
       await cheerpjInit({
         version: 8,
         javaProperties: [
-          "java.library.path=/app/natives", 
+          `java.library.path=${nativesPath}`,
           "org.lwjgl.util.NoChecks=true", 
           "fml.ignoreInvalidMinecraftCertificates=true"
         ],
