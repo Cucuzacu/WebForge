@@ -211,7 +211,7 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 		if (vd.buf) {
 			batchBuffer.set(vd.buf, offset);
 		} else {
-			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[vd.pointer + i];
+			batchBuffer.set(heapView.subarray(vd.pointer, vd.pointer + bytes), offset);
 		}
 		vOffset = offset;
 		offset += bytes;
@@ -221,7 +221,7 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 		if (cd.buf) {
 			batchBuffer.set(cd.buf, offset);
 		} else {
-			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[cd.pointer + i];
+			batchBuffer.set(heapView.subarray(cd.pointer, cd.pointer + bytes), offset);
 		}
 		cOffset = offset;
 		offset += bytes;
@@ -231,7 +231,7 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 		if (td.buf) {
 			batchBuffer.set(td.buf, offset);
 		} else {
-			for (let i = 0; i < bytes; i++) batchBuffer[offset + i] = heapView[td.pointer + i];
+			batchBuffer.set(heapView.subarray(td.pointer, td.pointer + bytes), offset);
 		}
 		tOffset = offset;
 		offset += bytes;
@@ -262,11 +262,19 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 function captureData(v, data, count)
 {
 	var ret = { enabled: data.enabled, size: data.size, type: data.type, stride: data.stride, pointer: 0, buf: null };
-	if(data.enabled) {
+	if(data.enabled)
+	{
 		var effectiveStride = getEffectiveStride(data);
 		var len = effectiveStride * count;
-		ret.buf = new Uint8Array(len);
-		ret.buf.set(new Uint8Array(v.buffer, data.pointer, len));
+
+		if (captureSlabOffset + len > CAPTURE_SLAB_SIZE) captureSlabOffset = 0; 
+
+		ret.buf = captureSlab.subarray(captureSlabOffset, captureSlabOffset + len);
+
+		var heapView = getWasmHeapView(v.buffer);
+		ret.buf.set(heapView.subarray(data.pointer, data.pointer + len));
+		
+		captureSlabOffset += len;
 	}
 	return ret;
 }
@@ -277,10 +285,11 @@ function checkNoList(list)
 }
 function pushInList(list, args, callee)
 {
-	// Not an elegant solution, but it works
-	// It would be nicer to extract the actual implementation from native interfaces
-	// to avoid bringing around the library object
-	list.push({f: callee, a: Array.from(args)});
+	var a = new Array(args.length);
+	for(var i = 0; i < args.length; i++) {
+		a[i] = args[i];
+	}
+	list.push({f: callee, a: a});
 }
 function callList(listId)
 {
@@ -811,7 +820,7 @@ function Java_org_lwjgl_opengl_GL11_nglViewport(lib, x, y, width, height, funcPt
 function Java_org_lwjgl_opengl_GL11_nglDisable(lib, a, funcPtr)
 {
 	checkNoList(curList);
-	if(a == glCtx.BLEND || a == glCtx.CULL_FACE || a == glCtx.DEPTH_TEST){
+	if(a == glCtx.BLEND || a == glCtx.CULL_FACE || a == glCtx.DEPTH_TEST || a == glCtx.SCISSOR_TEST){
 		glCtx.disable(a);
 	} else if(a == 0x806F/*GL_TEXTURE_3D*/) {
 		if (currentActiveTexture === 0x84C0) glCtx.uniform1f(texMaskLocation, 0.0);
@@ -827,7 +836,7 @@ function Java_org_lwjgl_opengl_GL11_nglDisable(lib, a, funcPtr)
 function Java_org_lwjgl_opengl_GL11_nglEnable(lib, a, funcPtr)
 {
 	checkNoList(curList);
-	if (a == glCtx.CULL_FACE || a == glCtx.DEPTH_TEST) {
+	if (a == glCtx.CULL_FACE || a == glCtx.DEPTH_TEST || a == glCtx.SCISSOR_TEST) {
 		glCtx.enable(a);
 	} else if (a == 0xDE1 /* GL_TEXTURE_2D */) {
 		if (currentActiveTexture === 0x84C0) glCtx.uniform1f(texMaskLocation, 1.0);
@@ -841,6 +850,12 @@ function Java_org_lwjgl_opengl_GL11_nglEnable(lib, a, funcPtr)
 	} else if(verboseLog) {
 		console.log("glEnable " + a.toString(16));
 	}
+}
+
+function Java_org_lwjgl_opengl_GL11_nglScissor(lib, x, y, width, height, funcPtr)
+{
+	checkNoList(curList);
+	glCtx.scissor(x, y, width, height);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglGenTextures(lib, n, memPtr, funcPtr)
@@ -864,10 +879,31 @@ function Java_org_lwjgl_opengl_GL11_nglBindTexture(lib, target, id, funcPtr)
 	glCtx.bindTexture(target, textureObjects[id]);
 }
 
+function Java_org_lwjgl_opengl_GL11_nglDeleteTextures(lib, n, memPtr, funcPtr)
+{
+	checkNoList(curList);
+	var v = lib.getJNIDataView();
+	var ptr = Number(memPtr);
+	
+	for(var i = 0; i < n; i++) {
+		var id = v.getInt32(ptr + i * 4, true);
+		if (textureObjects[id]) {
+			glCtx.deleteTexture(textureObjects[id]);
+			textureObjects[id] = null;
+		}
+	}
+}
+
 function Java_org_lwjgl_opengl_GL11_nglTexParameteri(lib, target, pname, param, funcPtr)
 {
 	checkNoList(curList);
 	glCtx.texParameteri(target, pname, param);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglTexParameterf(lib, target, pname, param, funcPtr)
+{
+	checkNoList(curList);
+	glCtx.texParameterf(target, pname, param);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglTexImage2D(lib, target, level, internalFormat, width, height, border, format, type, memPtr, funcPtr)
@@ -1013,6 +1049,33 @@ function Java_org_lwjgl_opengl_GL11_nglColor3f(lib, r, g, b, funcPtr)
 	glCtx.vertexAttrib4f(colorLocation, r, g, b, 1.0);
 }
 
+function Java_org_lwjgl_opengl_GL11_nglColor3ub(lib, r, g, b, funcPtr)
+{
+	if (curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglColor3ub);
+	var rf = (r & 0xFF) / 255.0;
+	var gf = (g & 0xFF) / 255.0;
+	var bf = (b & 0xFF) / 255.0;
+	immediateModeData.currentColor[0] = rf;
+	immediateModeData.currentColor[1] = gf;
+	immediateModeData.currentColor[2] = bf;
+	immediateModeData.currentColor[3] = 1.0;
+	glCtx.vertexAttrib4f(colorLocation, rf, gf, bf, 1.0);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglColor4ub(lib, r, g, b, a, funcPtr)
+{
+	if (curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglColor4ub);
+	var rf = (r & 0xFF) / 255.0;
+	var gf = (g & 0xFF) / 255.0;
+	var bf = (b & 0xFF) / 255.0;
+	var af = (a & 0xFF) / 255.0;
+	immediateModeData.currentColor[0] = rf;
+	immediateModeData.currentColor[1] = gf;
+	immediateModeData.currentColor[2] = bf;
+	immediateModeData.currentColor[3] = af;
+	glCtx.vertexAttrib4f(colorLocation, rf, gf, bf, af);
+}
+
 function Java_org_lwjgl_opengl_LinuxDisplay_nGetNativeCursorCapabilities()
 {
 }
@@ -1021,7 +1084,7 @@ function Java_org_lwjgl_opengl_GL11_nglShadeModel()
 {
 	checkNoList(curList);
 	if(verboseLog)
-		console.log("glShaderModel");
+		console.log("glShadeModel");
 }
 
 function Java_org_lwjgl_opengl_GL11_nglClearDepth(lib, a, funcPtr)
@@ -1296,6 +1359,19 @@ function Java_org_lwjgl_opengl_GL11_nglTexCoord2f(lib, x, y, funcPtr)
 	immediateModeData.texCoordBuf[curPos] = x;
 	immediateModeData.texCoordBuf[curPos + 1] = y;
 	immediateModeData.texCoordPos = curPos + 2;
+}
+
+function Java_org_lwjgl_opengl_GL11_nglVertex2f(lib, x, y, funcPtr)
+{
+	checkNoList(curList);
+	immediateModeData.vertexBuf[immediateModeData.vertexPos++] = x;
+	immediateModeData.vertexBuf[immediateModeData.vertexPos++] = y;
+	immediateModeData.vertexBuf[immediateModeData.vertexPos++] = 0.0;
+
+	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[0];
+	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[1];
+	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[2];
+	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[3];
 }
 
 function Java_org_lwjgl_opengl_GL11_nglVertex3f(lib, x, y, z, funcPtr)
@@ -1660,9 +1736,12 @@ export default {
 	Java_org_lwjgl_opengl_GL11_nglViewport,
 	Java_org_lwjgl_opengl_GL11_nglDisable,
 	Java_org_lwjgl_opengl_GL11_nglEnable,
+        Java_org_lwjgl_opengl_GL11_nglScissor,
 	Java_org_lwjgl_opengl_GL11_nglGenTextures,
 	Java_org_lwjgl_opengl_GL11_nglBindTexture,
+        Java_org_lwjgl_opengl_GL11_nglDeleteTextures,
 	Java_org_lwjgl_opengl_GL11_nglTexParameteri,
+        Java_org_lwjgl_opengl_GL11_nglTexParameterf,
 	Java_org_lwjgl_opengl_GL11_nglTexImage2D,
 	Java_org_lwjgl_opengl_GL11_nglTexCoordPointer,
 	Java_org_lwjgl_opengl_GL11_nglEnableClientState,
@@ -1676,6 +1755,8 @@ export default {
 	Java_org_lwjgl_opengl_GL11_nglNewList,
 	Java_org_lwjgl_opengl_GL11_nglEndList,
 	Java_org_lwjgl_opengl_GL11_nglColor3f,
+        Java_org_lwjgl_opengl_GL11_nglColor3ub,
+        Java_org_lwjgl_opengl_GL11_nglColor4ub,
 	Java_org_lwjgl_opengl_LinuxDisplay_nGetNativeCursorCapabilities,
 	Java_org_lwjgl_opengl_GL11_nglShadeModel,
 	Java_org_lwjgl_opengl_GL11_nglClearDepth,
@@ -1711,6 +1792,7 @@ export default {
 	Java_org_lwjgl_opengl_GL11_nglPolygonOffset,
 	Java_org_lwjgl_opengl_GL11_nglBegin,
 	Java_org_lwjgl_opengl_GL11_nglTexCoord2f,
+        Java_org_lwjgl_opengl_GL11_nglVertex2f,
 	Java_org_lwjgl_opengl_GL11_nglVertex3f,
 	Java_org_lwjgl_opengl_GL11_nglEnd,
 	Java_org_lwjgl_openal_AL_nCreate,

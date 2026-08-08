@@ -50,10 +50,18 @@
         <br><br>
         <input type="file" id="mod-upload" multiple accept=".jar,.zip">
       </div>
+      <br>
+
+      <div>
+        <label for="resourcepack-upload">Select Resourcepacks (.zip): </label>
+        <br><br>
+        <input type="file" id="resourcepack-upload" multiple accept=".zip">
+      </div>
       
       <button id="upload-btn">1. Upload Mods</button>
+      <button id="upload-resourcepack-btn">2. Upload Resourcepacks</button>
       <br>
-      <button id="start-btn" disabled>2. Start Game</button>
+      <button id="start-btn" disabled>3. Start Game</button>
 
       <div id="status">Initializing Cheerpj...</div>
     </div>
@@ -67,7 +75,9 @@
 
       const statusText = document.getElementById("status");
       const modInput = document.getElementById("mod-upload");
+      const resourcepackInput = document.getElementById("resourcepack-upload");
       const uploadBtn = document.getElementById("upload-btn");
+      const uploadResourcepackBtn = document.getElementById("upload-resourcepack-btn");
       const startBtn = document.getElementById("start-btn");
       const menu = document.getElementById("launcher-menu");
       const gameContainer = document.getElementById("game-container");
@@ -83,7 +93,7 @@
         ],
       });
 
-      statusText.innerText = "Ready. You can upload mods or start.";
+      statusText.innerText = "Ready. You can upload mods/resourcepacks or start.";
       startBtn.disabled = false;
 
       uploadBtn.addEventListener("click", async () => {
@@ -129,6 +139,52 @@
         } finally {
           startBtn.disabled = false;
           uploadBtn.disabled = false;
+        }
+      });
+
+      uploadResourcepackBtn.addEventListener("click", async () => {
+        if (resourcepackInput.files.length === 0) {
+          alert("Please select at least one resourcepack file!");
+          return;
+        }
+        
+        uploadResourcepackBtn.disabled = true;
+        startBtn.disabled = true;
+        statusText.innerText = "Preparing fs...";
+
+        try {
+          const lib = await cheerpjRunLibrary(""); 
+          const Files = await lib.java.nio.file.Files;
+          const Paths = await lib.java.nio.file.Paths;
+          const StandardCopyOption = await lib.java.nio.file.StandardCopyOption;
+
+          const resourcepacksDir = await Paths.get("/files/game/resourcepacks");
+          await Files.createDirectories(resourcepacksDir);
+
+          for (const file of resourcepackInput.files) {
+            statusText.innerText = `Uploading: ${file.name}...`;
+
+            const arrayBuffer = await file.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+
+            const strPath = `/str/${file.name}`;
+            cheerpOSAddStringFile(strPath, uint8Array);
+
+            const source = await Paths.get(strPath);
+            const target = await Paths.get(`/files/game/resourcepacks/${file.name}`);
+            
+            await Files.copy(source, target, [StandardCopyOption.REPLACE_EXISTING]);
+            console.log(`Successfully moved ${file.name} to /files/game/resourcepacks/`);
+          }
+
+          statusText.innerText = "All resourcepacks uploaded! Ready to start.";
+          uploadResourcepackBtn.innerText = "Uploaded ✓";
+        } catch (error) {
+          console.error("Upload failed:", error);
+          statusText.innerText = "Error uploading resourcepacks. See console.";
+        } finally {
+          startBtn.disabled = false;
+          uploadResourcepackBtn.disabled = false;
         }
       });
 
