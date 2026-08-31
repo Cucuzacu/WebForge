@@ -36,7 +36,7 @@
   <body>
 
     <div id="launcher-menu">
-      <h2>WebForge Launcher v5 - Made by Cucuzacu</h2>
+      <h2>WebForge Launcher v6 - Made by Cucuzacu</h2>
 
       <div>
         <label for="username-input">Username: </label>
@@ -103,6 +103,7 @@
         }
         
         uploadBtn.disabled = true;
+        uploadResourcepackBtn.disabled = true;
         startBtn.disabled = true;
         statusText.innerText = "Preparing fs...";
 
@@ -139,6 +140,7 @@
         } finally {
           startBtn.disabled = false;
           uploadBtn.disabled = false;
+          uploadResourcepackBtn.disabled = false;
         }
       });
 
@@ -149,6 +151,7 @@
         }
         
         uploadResourcepackBtn.disabled = true;
+        uploadBtn.disabled = true;
         startBtn.disabled = true;
         statusText.innerText = "Preparing fs...";
 
@@ -185,6 +188,7 @@
         } finally {
           startBtn.disabled = false;
           uploadResourcepackBtn.disabled = false;
+          uploadBtn.disabled = false;
         }
       });
 
