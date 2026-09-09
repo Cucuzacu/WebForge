@@ -4,19 +4,31 @@ await import("https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/3.4.2/gl-matrix-m
 const glCanvas = window.lwjglCanvasElement;
 if (!(glCanvas instanceof HTMLCanvasElement)) throw new Error("window.lwjglCanvasElement is not set or is not a canvas");
 const glCtx = glCanvas.getContext("webgl2", {antialias: false, alpha: true});
+const debugRendererExt = glCtx.getExtension("WEBGL_debug_renderer_info");
 
 var vertexShaderSrc = `
 	attribute vec4 aVertexPosition;
 	attribute vec4 aColor;
 	attribute vec2 aTexCoord;
+	attribute vec3 aNormal;
+	
 	uniform mat4 modelView;
 	uniform mat4 projection;
+	uniform mat3 normalMatrix;
+	
 	varying vec2 vTexCoord;
 	varying vec4 vColor;
+	varying vec3 vNormal;
+	varying float vFogFragCoord;
+	
 	void main() {
-		gl_Position = projection * modelView * aVertexPosition;
+		vec4 eyePos = modelView * aVertexPosition;
+		gl_Position = projection * eyePos;
 		vTexCoord = aTexCoord;
 		vColor = aColor;
+		vNormal = normalize(normalMatrix * aNormal);
+		
+		vFogFragCoord = abs(eyePos.z / eyePos.w); 
 	}
 `;
 // NOTE: Only the default GL_MODULATE texEnv is supported here
@@ -24,10 +36,23 @@ var fragmentShaderSrc = `
 	precision mediump float;
 	uniform sampler2D uSampler;
 	uniform float uTextureMask;
-	uniform float uAlphaTest;
+	uniform float uAlphaTestEnable;
+	uniform float uAlphaFunc;
+	uniform float uAlphaRef;
 	uniform float uIsBGRA;
+	
+	uniform float uFogEnable;
+	uniform float uFogMode;
+	uniform float uFogDensity;
+	uniform float uFogStart;
+	uniform float uFogEnd;
+	uniform vec4 uFogColor;
+	
 	varying vec2 vTexCoord;
 	varying vec4 vColor;
+	varying vec3 vNormal;
+	varying float vFogFragCoord;
+	
 	void main() {
 		vec4 color = vColor;
 		if (uTextureMask > 0.5) {
@@ -38,8 +63,32 @@ var fragmentShaderSrc = `
 			color *= texSample;
 		}
 		
-		if (color.a < uAlphaTest) {
-			discard;
+		if (uAlphaTestEnable > 0.5) {
+			bool pass = true;
+			if (uAlphaFunc == 512.0) pass = false;                     // GL_NEVER
+			else if (uAlphaFunc == 513.0) pass = color.a < uAlphaRef;  // GL_LESS
+			else if (uAlphaFunc == 514.0) pass = color.a == uAlphaRef; // GL_EQUAL
+			else if (uAlphaFunc == 515.0) pass = color.a <= uAlphaRef; // GL_LEQUAL
+			else if (uAlphaFunc == 516.0) pass = color.a > uAlphaRef;  // GL_GREATER
+			else if (uAlphaFunc == 517.0) pass = color.a != uAlphaRef; // GL_NOTEQUAL
+			else if (uAlphaFunc == 518.0) pass = color.a >= uAlphaRef; // GL_GEQUAL
+			else if (uAlphaFunc == 519.0) pass = true;                 // GL_ALWAYS
+			if (!pass) discard;
+		}
+		
+		if (uFogEnable > 0.5) {
+			float f = 1.0;
+			if (uFogMode == 9729.0) { // GL_LINEAR
+				float range = max(uFogEnd - uFogStart, 0.00001);
+				f = (uFogEnd - vFogFragCoord) / range;
+			} else if (uFogMode == 2048.0) { // GL_EXP
+				f = exp(-(uFogDensity * vFogFragCoord));
+			} else if (uFogMode == 2049.0) { // GL_EXP2
+				float d = uFogDensity * vFogFragCoord;
+				f = exp(-(d * d));
+			}
+			f = clamp(f, 0.0, 1.0);
+			color.rgb = mix(uFogColor.rgb, color.rgb, f);
 		}
 		
 		gl_FragColor = color;
@@ -64,6 +113,8 @@ const batchBuffer = new Uint8Array(MAX_BUFFER_SIZE);
 var vertexPosition = glCtx.getAttribLocation(program, "aVertexPosition");
 var colorLocation = glCtx.getAttribLocation(program, "aColor");
 var texCoord = glCtx.getAttribLocation(program, "aTexCoord");
+var normalLocation = glCtx.getAttribLocation(program, "aNormal");
+var normalMatLocation = glCtx.getUniformLocation(program, "normalMatrix");
 var mvLocation = glCtx.getUniformLocation(program, "modelView");
 var projLocation = glCtx.getUniformLocation(program, "projection");
 var samplerLocation = glCtx.getUniformLocation(program, "uSampler");
@@ -71,8 +122,27 @@ var samplerLocation2 = glCtx.getUniformLocation(program, "uSampler2");
 var texMaskLocation = glCtx.getUniformLocation(program, "uTextureMask");
 var alphaTestLocation = glCtx.getUniformLocation(program, "uAlphaTest");
 var bgraLocation = glCtx.getUniformLocation(program, "uIsBGRA");
+var fogEnableLocation = glCtx.getUniformLocation(program, "uFogEnable");
+var fogModeLocation = glCtx.getUniformLocation(program, "uFogMode");
+var fogDensityLocation = glCtx.getUniformLocation(program, "uFogDensity");
+var fogStartLocation = glCtx.getUniformLocation(program, "uFogStart");
+var fogEndLocation = glCtx.getUniformLocation(program, "uFogEnd");
+var fogColorLocation = glCtx.getUniformLocation(program, "uFogColor");
+var alphaTestEnableLocation = glCtx.getUniformLocation(program, "uAlphaTestEnable");
+var alphaFuncLocation = glCtx.getUniformLocation(program, "uAlphaFunc");
+var alphaRefLocation = glCtx.getUniformLocation(program, "uAlphaRef");
+glCtx.uniform1f(alphaTestEnableLocation, 0.0);
+glCtx.uniform1f(alphaFuncLocation, 519.0);
+glCtx.uniform1f(alphaRefLocation, 0.0);
+glCtx.uniform1f(fogEnableLocation, 0.0);
+glCtx.uniform1f(fogModeLocation, 2048.0); // GL_EXP
+glCtx.uniform1f(fogDensityLocation, 1.0);
+glCtx.uniform1f(fogStartLocation, 0.0);
+glCtx.uniform1f(fogEndLocation, 1.0);
+glCtx.uniform4f(fogColorLocation, 0.0, 0.0, 0.0, 0.0);
 glCtx.uniform1f(bgraLocation, 0.0);
 glCtx.uniform1f(alphaTestLocation, 0.1);
+const normalMatrix = glMatrix.mat3.create();
 var vertexData =
 {
 	enabled: false,
@@ -118,7 +188,10 @@ var immediateModeData = {
 	texCoordPos: 0,
 	colorBuf: new Float32Array(65536 * 4),
 	colorPos: 0,
-	currentColor: [1.0, 1.0, 1.0, 1.0]
+	normalBuf: new Float32Array(65536 * 3),
+	normalPos: 0,
+	currentColor: [1.0, 1.0, 1.0, 1.0],
+	currentNormal: [0.0, 0.0, 1.0]
 };
 var verboseLog = false;
 var frameCount = 0;
@@ -129,6 +202,7 @@ const MAX_TEXTURE_SIZE = 1024 * 1024 * 16;
 const scratchTextureBuf = new Uint8Array(MAX_TEXTURE_SIZE);
 const immediateVertexView = new Uint8Array(immediateModeData.vertexBuf.buffer);
 const immediateColorView = new Uint8Array(immediateModeData.colorBuf.buffer);
+const immediateNormalView = new Uint8Array(immediateModeData.normalBuf.buffer);
 const immediateTexCoordView = new Uint8Array(immediateModeData.texCoordBuf.buffer);
 const CAPTURE_SLAB_SIZE = 1024 * 1024 * 32;
 const captureSlab = new Uint8Array(CAPTURE_SLAB_SIZE);
@@ -200,14 +274,15 @@ function getWasmHeapView(buffer)
 		wasmHeapView = new Uint8Array(buffer);
 	return wasmHeapView;
 }
-function uploadAllData(v, count, capVert, capCol, capTex)
+function uploadAllData(v, count, capVert, capCol, capTex, capNorm)
 {
 	let offset = 0;
-	let vOffset = 0, cOffset = 0, tOffset = 0;
+	let vOffset = 0, cOffset = 0, tOffset = 0, nOffset = 0;
 
 	let vd = capVert || vertexData;
 	let cd = capCol || colorData;
 	let td = capTex || texCoordData;
+	let nd = capNorm || normalData;
 
 	let heap = v ? v.buffer : null;
 	let heapView = heap ? getWasmHeapView(heap) : null;
@@ -242,6 +317,16 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 		tOffset = offset;
 		offset += bytes;
 	}
+	if (nd.enabled) {
+		let bytes = getEffectiveStride(nd) * count;
+		if (nd.buf) {
+			batchBuffer.set(nd.buf, offset);
+		} else {
+			batchBuffer.set(heapView.subarray(nd.pointer, nd.pointer + bytes), offset);
+		}
+		nOffset = offset;
+		offset += bytes;
+	}
 
 	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
 	glCtx.bufferSubData(glCtx.ARRAY_BUFFER, 0, batchBuffer, 0, offset);
@@ -262,6 +347,13 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 	} else {
 		glCtx.disableVertexAttribArray(texCoord);
 		glCtx.vertexAttrib2f(texCoord, 0, 0);
+	}
+
+	if (nd.enabled) {
+		glCtx.vertexAttribPointer(normalLocation, nd.size, nd.type, nd.type !== glCtx.FLOAT, nd.stride, nOffset);
+		glCtx.enableVertexAttribArray(normalLocation);
+	} else {
+		glCtx.disableVertexAttribArray(normalLocation);
 	}
 }
 
@@ -311,6 +403,10 @@ function drawArraysImpl(mode, first, count)
 	if (matricesDirty) {
 		glCtx.uniformMatrix4fv(mvLocation, false, modelViewMatrixStack.getTop());
 		glCtx.uniformMatrix4fv(projLocation, false, projMatrixStack.getTop());
+		
+		glMatrix.mat3.normalFromMat4(normalMatrix, modelViewMatrixStack.getTop());
+		glCtx.uniformMatrix3fv(normalMatLocation, false, normalMatrix);
+		
 		matricesDirty = false;
 	}
 	assert(first == 0);
@@ -328,13 +424,13 @@ function drawArraysImpl(mode, first, count)
 }
 function pushDrawArraysInList(list, v, mode, first, count)
 {
-	var args = [mode, first, count, captureData(v, vertexData, count), captureData(v, colorData, count), captureData(v, texCoordData, count)];
+	var args = [mode, first, count, captureData(v, vertexData, count), captureData(v, colorData, count), captureData(v, texCoordData, count), captureData(v, normalData, count)];
 	list.push({f: drawArraysInList, a: args});
 }
-function drawArraysInList(mode, first, count, capturedVertexData, capturedColorData, capturedTexCoordData)
+function drawArraysInList(mode, first, count, capturedVertexData, capturedColorData, capturedTexCoordData, capturedNormalData)
 {
-	uploadAllData(null, count, capturedVertexData, capturedColorData, capturedTexCoordData);
-	drawArraysImpl(mode, first, count);
+    uploadAllData(null, count, capturedVertexData, capturedColorData, capturedTexCoordData, capturedNormalData);
+    drawArraysImpl(mode, first, count);
 }
 // Fix the sampler to texture unit 0
 glCtx.uniform1i(samplerLocation, 0);
@@ -677,15 +773,26 @@ function Java_org_lwjgl_opengl_GLContext_ngetFunctionAddress(lib, stringPtr)
 function Java_org_lwjgl_opengl_GL11_nglGetString(lib, id, funcPtr)
 {
 	checkNoList(curList);
-	// Special case GL_EXTENSION for now
-	if(id == 0x1F03)
-	{
-		// TODO: Do we need any?
-		return "";
+	if (id === 0x1F00 /* GL_VENDOR */) {
+		return (debugRendererExt && glCtx.getParameter(debugRendererExt.UNMASKED_VENDOR_WEBGL)) || glCtx.getParameter(glCtx.VENDOR) || "WebGL";
 	}
-	else
-	{
-		return glCtx.getParameter(id);
+	if (id === 0x1F01 /* GL_RENDERER */) {
+		return (debugRendererExt && glCtx.getParameter(debugRendererExt.UNMASKED_RENDERER_WEBGL)) || glCtx.getParameter(glCtx.RENDERER) || "WebGL";
+	}
+	if (id === 0x1F02 /* GL_VERSION */) {
+		return glCtx.getParameter(glCtx.VERSION) || "OpenGL ES 2.0 WebGL";
+	}
+	if (id === 0x1F03 /* GL_EXTENSIONS */) {
+		const exts = glCtx.getSupportedExtensions();
+		return exts ? exts.join(" ") : "";
+	}
+	if (id === 0x8B8C /* GL_SHADING_LANGUAGE_VERSION */) {
+		return glCtx.getParameter(glCtx.SHADING_LANGUAGE_VERSION) || "OpenGL ES GLSL ES 1.00";
+	}
+	try {
+		return glCtx.getParameter(id) || "";
+	} catch (e) {
+		return "";
 	}
 }
 
@@ -816,7 +923,9 @@ function Java_org_lwjgl_opengl_GL11_nglDisable(lib, a, funcPtr)
 	} else if(a == 0x806F/*GL_TEXTURE_3D*/) {
 		if (currentActiveTexture === 0x84C0) glCtx.uniform1f(texMaskLocation, 0.0);
 	} else if (a == 0xBC0 /* GL_ALPHA_TEST */) {
-		glCtx.uniform1f(alphaTestLocation, 0.0);
+		glCtx.uniform1f(alphaTestEnableLocation, 0.0);
+	} else if (a == 0x0B60 /* GL_FOG */) {
+		glCtx.uniform1f(fogEnableLocation, 0.0);
 	} else if (a == 0xDE1 /* GL_TEXTURE_2D */) {
 		if (currentActiveTexture === 0x84C0) glCtx.uniform1f(texMaskLocation, 0.0);
 	} else if(verboseLog) {
@@ -837,7 +946,9 @@ function Java_org_lwjgl_opengl_GL11_nglEnable(lib, a, funcPtr)
 		glCtx.enable(glCtx.BLEND);
 		glCtx.blendFunc(glCtx.SRC_ALPHA, glCtx.ONE_MINUS_SRC_ALPHA);
 	} else if (a == 0xBC0 /* GL_ALPHA_TEST */) {
-		glCtx.uniform1f(alphaTestLocation, 0.1);
+		glCtx.uniform1f(alphaTestEnableLocation, 1.0);
+	} else if (a == 0x0B60 /* GL_FOG */) {
+		glCtx.uniform1f(fogEnableLocation, 1.0);
 	} else if(verboseLog) {
 		console.log("glEnable " + a.toString(16));
 	}
@@ -970,8 +1081,32 @@ function Java_org_lwjgl_opengl_GL11_nglDrawArrays(lib, mode, first, count, funcP
 {
 	var v = lib.getJNIDataView();
 	if(curList) return pushDrawArraysInList(curList, v, mode, first, count);
-	uploadAllData(v, count, null, null, null);
+	uploadAllData(v, count, null, null, null, null);
 	drawArraysImpl(mode, first, count);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglStencilFunc(lib, func, ref, mask, funcPtr)
+{
+    checkNoList(curList);
+    glCtx.stencilFunc(func, ref, mask);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglStencilOp(lib, fail, zfail, zpass, funcPtr)
+{
+    checkNoList(curList);
+    glCtx.stencilOp(fail, zfail, zpass);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglStencilMask(lib, mask, funcPtr)
+{
+    checkNoList(curList);
+    glCtx.stencilMask(mask);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglClearStencil(lib, s, funcPtr)
+{
+    checkNoList(curList);
+    glCtx.clearStencil(s);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglDisableClientState(lib, v, funcPtr) {
@@ -998,14 +1133,12 @@ function Java_org_lwjgl_opengl_GL11_nglColor4f(lib, r, g, b, a, funcPtr)
 	glCtx.vertexAttrib4f(colorLocation, r, g, b, a);
 }
 
-function Java_org_lwjgl_opengl_GL11_nglAlphaFunc(lib, func, ref, funcPtr) {
-	checkNoList(curList);
-	if(verboseLog) {
-		console.log("glAlphaFunc: func=" + func + ", ref=" + ref);
-	}
-	if (alphaTestLocation) {
-		glCtx.uniform1f(alphaTestLocation, ref);
-	}
+function Java_org_lwjgl_opengl_GL11_nglAlphaFunc(lib, func, ref, funcPtr)
+{
+	if (curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglAlphaFunc);
+	if (verboseLog) console.log("glAlphaFunc: func=" + func + ", ref=" + ref);
+	glCtx.uniform1f(alphaFuncLocation, func);
+	glCtx.uniform1f(alphaRefLocation, ref);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglGenLists(lib, range, funcPtr)
@@ -1215,11 +1348,34 @@ function Java_org_lwjgl_opengl_GL11_nglGetFloatv(lib, a, memPtr, funcPtr)
 	}
 }
 
-function Java_org_lwjgl_opengl_GL11_nglFogfv()
+function Java_org_lwjgl_opengl_GL11_nglFogfv(lib, pname, memPtr, funcPtr)
 {
-	checkNoList(curList);
-	if(verboseLog)
-		console.log("glFog");
+    var v = lib.getJNIDataView();
+    var ptr = Number(memPtr);
+
+    if (pname === 0x0B66 /* GL_FOG_COLOR */) {
+        var r = v.getFloat32(ptr, true);
+        var g = v.getFloat32(ptr + 4, true);
+        var b = v.getFloat32(ptr + 8, true);
+        var a = v.getFloat32(ptr + 12, true);
+        if (curList) {
+            pushInList(curList, [lib, r, g, b, a], setFogColorDirect);
+        } else {
+            glCtx.uniform4f(fogColorLocation, r, g, b, a);
+        }
+    } else {
+        var val = v.getFloat32(ptr, true);
+        if (curList) {
+            pushInList(curList, [lib, pname, val], Java_org_lwjgl_opengl_GL11_nglFogf);
+        } else {
+            setFogParam(pname, val);
+        }
+    }
+}
+
+function setFogColorDirect(lib, r, g, b, a)
+{
+    glCtx.uniform4f(fogColorLocation, r, g, b, a);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglGetTexLevelParameteriv(lib, target, level, pname, memPtr, funcPtr)
@@ -1238,25 +1394,38 @@ function Java_org_lwjgl_opengl_GL11_nglGetTexLevelParameteriv(lib, target, level
 	}
 }
 
-function Java_org_lwjgl_opengl_GL11_nglNormal3f()
+function Java_org_lwjgl_opengl_GL11_nglNormal3f(lib, nx, ny, nz, funcPtr)
 {
-	checkNoList(curList);
-	if(verboseLog)
-		console.log("glNormal3f");
+	if(curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglNormal3f);
+	immediateModeData.currentNormal[0] = nx;
+	immediateModeData.currentNormal[1] = ny;
+	immediateModeData.currentNormal[2] = nz;
+	glCtx.vertexAttrib3f(normalLocation, nx, ny, nz);
 }
 
-function Java_org_lwjgl_opengl_GL11_nglFogi()
+function setFogParam(pname, val)
 {
-	checkNoList(curList);
-	if(verboseLog)
-		console.log("glFogi");
+    if (pname === 0x0B65 /* GL_FOG_MODE */) {
+        glCtx.uniform1f(fogModeLocation, val);
+    } else if (pname === 0x0B62 /* GL_FOG_DENSITY */) {
+        glCtx.uniform1f(fogDensityLocation, val);
+    } else if (pname === 0x0B63 /* GL_FOG_START */) {
+        glCtx.uniform1f(fogStartLocation, val);
+    } else if (pname === 0x0B64 /* GL_FOG_END */) {
+        glCtx.uniform1f(fogEndLocation, val);
+    }
 }
 
-function Java_org_lwjgl_opengl_GL11_nglFogf()
+function Java_org_lwjgl_opengl_GL11_nglFogi(lib, pname, param, funcPtr)
 {
-	checkNoList(curList);
-	if(verboseLog)
-		console.log("glFogf");
+    if (curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglFogi);
+    setFogParam(pname, param);
+}
+
+function Java_org_lwjgl_opengl_GL11_nglFogf(lib, pname, param, funcPtr)
+{
+    if (curList) return pushInList(curList, arguments, Java_org_lwjgl_opengl_GL11_nglFogf);
+    setFogParam(pname, param);
 }
 
 function Java_org_lwjgl_opengl_GL11_nglColorMaterial()
@@ -1339,6 +1508,7 @@ function Java_org_lwjgl_opengl_GL11_nglBegin(lib, mode, funcPtr)
 	immediateModeData.vertexPos = 0;
 	immediateModeData.texCoordPos = 0;
 	immediateModeData.colorPos = 0;
+	immediateModeData.normalPos = 0;
 }
 
 function Java_org_lwjgl_opengl_GL11_nglTexCoord2f(lib, x, y, funcPtr)
@@ -1366,6 +1536,10 @@ function Java_org_lwjgl_opengl_GL11_nglVertex2f(lib, x, y, funcPtr)
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[1];
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[2];
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[3];
+
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[0];
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[1];
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[2];
 }
 
 function Java_org_lwjgl_opengl_GL11_nglVertex3f(lib, x, y, z, funcPtr)
@@ -1379,6 +1553,10 @@ function Java_org_lwjgl_opengl_GL11_nglVertex3f(lib, x, y, z, funcPtr)
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[1];
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[2];
 	immediateModeData.colorBuf[immediateModeData.colorPos++] = immediateModeData.currentColor[3];
+
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[0];
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[1];
+	immediateModeData.normalBuf[immediateModeData.normalPos++] = immediateModeData.currentNormal[2];
 }
 
 function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
@@ -1390,6 +1568,7 @@ function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 	let vBytes = immediateModeData.vertexPos * 4;
 	let cBytes = immediateModeData.colorPos * 4;
 	let tBytes = immediateModeData.texCoordPos * 4;
+	let nBytes = immediateModeData.normalPos * 4;
 	
 	let vOffset = offset;
 	batchBuffer.set(immediateVertexView.subarray(0, vBytes), offset);
@@ -1404,6 +1583,13 @@ function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 	{
 		batchBuffer.set(immediateTexCoordView.subarray(0, tBytes), offset);
 		offset += tBytes;
+	}
+
+	let nOffset = offset;
+	if (nBytes > 0)
+	{
+		batchBuffer.set(immediateNormalView.subarray(0, nBytes), offset);
+		offset += nBytes;
 	}
 	
 	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
@@ -1424,6 +1610,17 @@ function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 	{
 		glCtx.disableVertexAttribArray(texCoord);
 		glCtx.vertexAttrib2f(texCoord, 0, 0);
+	}
+
+	if (nBytes > 0)
+	{
+		glCtx.vertexAttribPointer(normalLocation, 3, glCtx.FLOAT, false, 0, nOffset);
+		glCtx.enableVertexAttribArray(normalLocation);
+	}
+	else
+	{
+		glCtx.disableVertexAttribArray(normalLocation);
+		glCtx.vertexAttrib3f(normalLocation, 0.0, 0.0, 1.0);
 	}
 
 	drawArraysImpl(immediateModeData.mode, 0, count);
@@ -1742,6 +1939,10 @@ export default {
 	Java_org_lwjgl_opengl_GL11_nglColorPointer,
 	Java_org_lwjgl_opengl_GL11_nglVertexPointer,
 	Java_org_lwjgl_opengl_GL11_nglDrawArrays,
+        Java_org_lwjgl_opengl_GL11_nglStencilFunc,
+        Java_org_lwjgl_opengl_GL11_nglStencilOp,
+        Java_org_lwjgl_opengl_GL11_nglStencilMask,
+        Java_org_lwjgl_opengl_GL11_nglClearStencil,
 	Java_org_lwjgl_opengl_GL11_nglDisableClientState,
 	Java_org_lwjgl_opengl_GL11_nglColor4f,
 	Java_org_lwjgl_opengl_GL11_nglAlphaFunc,
