@@ -25,16 +25,19 @@ var fragmentShaderSrc = `
 	uniform sampler2D uSampler;
 	uniform float uTextureMask;
 	uniform float uAlphaTest;
+	uniform float uIsBGRA;
 	varying vec2 vTexCoord;
 	varying vec4 vColor;
 	void main() {
 		vec4 color = vColor;
 		if (uTextureMask > 0.5) {
 			vec4 texSample = texture2D(uSampler, vTexCoord);
+			if (uIsBGRA > 0.5) {
+				texSample = texSample.bgra;
+			}
 			color *= texSample;
 		}
 		
-		// Use the alpha test value provided by the game
 		if (color.a < uAlphaTest) {
 			discard;
 		}
@@ -67,6 +70,8 @@ var samplerLocation = glCtx.getUniformLocation(program, "uSampler");
 var samplerLocation2 = glCtx.getUniformLocation(program, "uSampler2");
 var texMaskLocation = glCtx.getUniformLocation(program, "uTextureMask");
 var alphaTestLocation = glCtx.getUniformLocation(program, "uAlphaTest");
+var bgraLocation = glCtx.getUniformLocation(program, "uIsBGRA");
+glCtx.uniform1f(bgraLocation, 0.0);
 glCtx.uniform1f(alphaTestLocation, 0.1);
 var vertexData =
 {
@@ -107,11 +112,11 @@ var texCoordData =
 // TODO: Make buffers resizeable if needed
 var immediateModeData = {
 	mode: 0,
-	vertexBuf: new Float32Array(2048),
+	vertexBuf: new Float32Array(65536),
 	vertexPos: 0,
-	texCoordBuf: new Float32Array(2048),
+	texCoordBuf: new Float32Array(65536),
 	texCoordPos: 0,
-	colorBuf: new Float32Array(2048 * 4),
+	colorBuf: new Float32Array(65536 * 4),
 	colorPos: 0,
 	currentColor: [1.0, 1.0, 1.0, 1.0]
 };
@@ -204,7 +209,8 @@ function uploadAllData(v, count, capVert, capCol, capTex)
 	let cd = capCol || colorData;
 	let td = capTex || texCoordData;
 
-	let heapView = v ? getWasmHeapView(v.buffer) : null;
+	let heap = v ? v.buffer : null;
+	let heapView = heap ? getWasmHeapView(heap) : null;
 
 	if (vd.enabled) {
 		let bytes = getEffectiveStride(vd) * count;
@@ -482,22 +488,7 @@ function getTextureData(v, memPtr, width, height, format, type)
     if (type === 0x1406 /* FLOAT */) bpp *= 4;
 
     const size = width * height * bpp;
-    const sourceBuf = new Uint8Array(v.buffer, ptr, size);
-
-    if (format === 0x80E1 /* GL_BGRA */)
-    {
-        const u8Source = new Uint8Array(v.buffer, ptr, size);
-        scratchTextureBuf.set(u8Source, 0);
-        
-        const u32 = new Uint32Array(scratchTextureBuf.buffer, scratchTextureBuf.byteOffset, size / 4);
-        for (let i = 0; i < u32.length; i++) {
-            const p = u32[i];
-            u32[i] = (p & 0xFF00FF00) | ((p & 0xFF) << 16) | ((p >> 16) & 0xFF);
-        }
-        return scratchTextureBuf.subarray(0, size);
-    }
-
-    return sourceBuf;
+    return getWasmHeapView(v.buffer).subarray(ptr, ptr + size);
 }
 
 function translateGLFormat(f) { return (f === 0x80E1 /* BGRA */) ? glCtx.RGBA : f; }
@@ -922,10 +913,11 @@ function Java_org_lwjgl_opengl_GL11_nglTexImage2D(lib, target, level, internalFo
     textureWidths[boundId] = width;
     textureHeights[boundId] = height;
 
+    glCtx.uniform1f(bgraLocation, (format === 0x80E1 /* GL_BGRA */) ? 1.0 : 0.0);
+
     glCtx.pixelStorei(glCtx.UNPACK_ALIGNMENT, 1);
     glCtx.texImage2D(target, level, glInt, width, height, border, glFmt, glTyp, buf);
 
-    // Standard Mipmap/Filter Setup
     const isPot = ((width & (width - 1)) === 0) && ((height & (height - 1)) === 0);
     glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_S, isPot ? glCtx.REPEAT : glCtx.CLAMP_TO_EDGE);
     glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_T, isPot ? glCtx.REPEAT : glCtx.CLAMP_TO_EDGE);
@@ -1199,6 +1191,8 @@ function Java_org_lwjgl_opengl_GL11_nglTexSubImage2D(lib, target, level, xoffset
     const buf = getTextureData(v, memPtr, width, height, format, type);
     const glFmt = translateGLFormat(format);
     const glTyp = translateGLType(type);
+
+    glCtx.uniform1f(bgraLocation, (format === 0x80E1 /* GL_BGRA */) ? 1.0 : 0.0);
 
     glCtx.pixelStorei(glCtx.UNPACK_ALIGNMENT, 1);
     glCtx.texSubImage2D(target, level, xoffset, yoffset, width, height, glFmt, glTyp, buf);

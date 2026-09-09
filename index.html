@@ -36,7 +36,7 @@
   <body>
 
     <div id="launcher-menu">
-      <h2>WebForge Launcher v6 - Made by Cucuzacu</h2>
+      <h2>WebForge Launcher v7 - Made by Cucuzacu</h2>
 
       <div>
         <label for="username-input">Username: </label>
@@ -92,6 +92,7 @@
           "fml.ignoreInvalidMinecraftCertificates=true"
         ],
       });
+      const lib = await cheerpjRunLibrary("");
 
       statusText.innerText = "Ready. You can upload mods/resourcepacks or start.";
       startBtn.disabled = false;
@@ -108,7 +109,6 @@
         statusText.innerText = "Preparing fs...";
 
         try {
-          const lib = await cheerpjRunLibrary(""); 
           const Files = await lib.java.nio.file.Files;
           const Paths = await lib.java.nio.file.Paths;
           const StandardCopyOption = await lib.java.nio.file.StandardCopyOption;
@@ -156,7 +156,6 @@
         statusText.innerText = "Preparing fs...";
 
         try {
-          const lib = await cheerpjRunLibrary(""); 
           const Files = await lib.java.nio.file.Files;
           const Paths = await lib.java.nio.file.Paths;
           const StandardCopyOption = await lib.java.nio.file.StandardCopyOption;

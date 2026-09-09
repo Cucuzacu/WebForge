@@ -2,11 +2,11 @@
 
 
 
-### PROJECT IS IN EARLY ALPHA! EXPECT A LOT OF BUGS AND LAG!
-
-
-
 WebForge is a port of Minecraft 1.6.4 forge to the web browser. It can load simple mods, such as [this](https://www.curseforge.com/minecraft/mc-mods/sprinting-key). The Aether II crashes because of some unsupported gl functions.
+
+
+
+To compile the offline download: run ```python3 bundleforofflinedownload.py```. Download the precompiled offline download from the [Releases section](https://github.com/Cucuzacu/WebForge/releases/latest).
 
 
 
