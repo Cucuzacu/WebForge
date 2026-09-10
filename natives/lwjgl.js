@@ -3,7 +3,7 @@ await import("https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/3.4.2/gl-matrix-m
 
 const glCanvas = window.lwjglCanvasElement;
 if (!(glCanvas instanceof HTMLCanvasElement)) throw new Error("window.lwjglCanvasElement is not set or is not a canvas");
-const glCtx = glCanvas.getContext("webgl2", {antialias: false, alpha: true});
+const glCtx = glCanvas.getContext("webgl2", { antialias: false, alpha: false, depth: true, stencil: true, powerPreference: "high-performance", desynchronized: true, preserveDrawingBuffer: false });
 const debugRendererExt = glCtx.getExtension("WEBGL_debug_renderer_info");
 
 var vertexShaderSrc = `
@@ -276,85 +276,54 @@ function getWasmHeapView(buffer)
 }
 function uploadAllData(v, count, capVert, capCol, capTex, capNorm)
 {
-	let offset = 0;
-	let vOffset = 0, cOffset = 0, tOffset = 0, nOffset = 0;
+    let vd = capVert || vertexData;
+    let cd = capCol || colorData;
+    let td = capTex || texCoordData;
+    let nd = capNorm || normalData;
 
-	let vd = capVert || vertexData;
-	let cd = capCol || colorData;
-	let td = capTex || texCoordData;
-	let nd = capNorm || normalData;
+    let heap = v ? v.buffer : null;
+    let heapView = heap ? getWasmHeapView(heap) : null;
+    let offset = 0;
 
-	let heap = v ? v.buffer : null;
-	let heapView = heap ? getWasmHeapView(heap) : null;
+    glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
 
-	if (vd.enabled) {
-		let bytes = getEffectiveStride(vd) * count;
-		if (vd.buf) {
-			batchBuffer.set(vd.buf, offset);
-		} else {
-			batchBuffer.set(heapView.subarray(vd.pointer, vd.pointer + bytes), offset);
-		}
-		vOffset = offset;
-		offset += bytes;
-	}
-	if (cd.enabled) {
-		let bytes = getEffectiveStride(cd) * count;
-		if (cd.buf) {
-			batchBuffer.set(cd.buf, offset);
-		} else {
-			batchBuffer.set(heapView.subarray(cd.pointer, cd.pointer + bytes), offset);
-		}
-		cOffset = offset;
-		offset += bytes;
-	}
-	if (td.enabled) {
-		let bytes = getEffectiveStride(td) * count;
-		if (td.buf) {
-			batchBuffer.set(td.buf, offset);
-		} else {
-			batchBuffer.set(heapView.subarray(td.pointer, td.pointer + bytes), offset);
-		}
-		tOffset = offset;
-		offset += bytes;
-	}
-	if (nd.enabled) {
-		let bytes = getEffectiveStride(nd) * count;
-		if (nd.buf) {
-			batchBuffer.set(nd.buf, offset);
-		} else {
-			batchBuffer.set(heapView.subarray(nd.pointer, nd.pointer + bytes), offset);
-		}
-		nOffset = offset;
-		offset += bytes;
-	}
+    if (vd.enabled) {
+        let bytes = getEffectiveStride(vd) * count;
+        if (vd.buf) glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, vd.buf, 0, bytes);
+        else glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, heapView, vd.pointer, bytes);
+        glCtx.vertexAttribPointer(vertexPosition, vd.size, vd.type, vd.type !== glCtx.FLOAT, vd.stride, offset);
+        glCtx.enableVertexAttribArray(vertexPosition);
+        offset += bytes;
+    } else glCtx.disableVertexAttribArray(vertexPosition);
 
-	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
-	glCtx.bufferSubData(glCtx.ARRAY_BUFFER, 0, batchBuffer, 0, offset);
+    if (cd.enabled) {
+        let bytes = getEffectiveStride(cd) * count;
+        if (cd.buf) glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, cd.buf, 0, bytes);
+        else glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, heapView, cd.pointer, bytes);
+        glCtx.vertexAttribPointer(colorLocation, cd.size, cd.type, cd.type !== glCtx.FLOAT, cd.stride, offset);
+        glCtx.enableVertexAttribArray(colorLocation);
+        offset += bytes;
+    } else glCtx.disableVertexAttribArray(colorLocation);
 
-	if (vd.enabled) {
-		glCtx.vertexAttribPointer(vertexPosition, vd.size, vd.type, vd.type !== glCtx.FLOAT, vd.stride, vOffset);
-		glCtx.enableVertexAttribArray(vertexPosition);
-	} else glCtx.disableVertexAttribArray(vertexPosition);
+    if (td.enabled) {
+        let bytes = getEffectiveStride(td) * count;
+        if (td.buf) glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, td.buf, 0, bytes);
+        else glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, heapView, td.pointer, bytes);
+        glCtx.vertexAttribPointer(texCoord, td.size, td.type, td.type !== glCtx.FLOAT, td.stride, offset);
+        glCtx.enableVertexAttribArray(texCoord);
+        offset += bytes;
+    } else {
+        glCtx.disableVertexAttribArray(texCoord);
+        glCtx.vertexAttrib2f(texCoord, 0, 0);
+    }
 
-	if (cd.enabled) {
-		glCtx.vertexAttribPointer(colorLocation, cd.size, cd.type, cd.type !== glCtx.FLOAT, cd.stride, cOffset);
-		glCtx.enableVertexAttribArray(colorLocation);
-	} else glCtx.disableVertexAttribArray(colorLocation);
-
-	if (td.enabled) {
-		glCtx.vertexAttribPointer(texCoord, td.size, td.type, td.type !== glCtx.FLOAT, td.stride, tOffset);
-		glCtx.enableVertexAttribArray(texCoord);
-	} else {
-		glCtx.disableVertexAttribArray(texCoord);
-		glCtx.vertexAttrib2f(texCoord, 0, 0);
-	}
-
-	if (nd.enabled) {
-		glCtx.vertexAttribPointer(normalLocation, nd.size, nd.type, nd.type !== glCtx.FLOAT, nd.stride, nOffset);
-		glCtx.enableVertexAttribArray(normalLocation);
-	} else {
-		glCtx.disableVertexAttribArray(normalLocation);
-	}
+    if (nd.enabled) {
+        let bytes = getEffectiveStride(nd) * count;
+        if (nd.buf) glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, nd.buf, 0, bytes);
+        else glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, heapView, nd.pointer, bytes);
+        glCtx.vertexAttribPointer(normalLocation, nd.size, nd.type, nd.type !== glCtx.FLOAT, nd.stride, offset);
+        glCtx.enableVertexAttribArray(normalLocation);
+    } else glCtx.disableVertexAttribArray(normalLocation);
 }
 
 function captureData(v, data, count)
@@ -364,15 +333,8 @@ function captureData(v, data, count)
 	{
 		var effectiveStride = getEffectiveStride(data);
 		var len = effectiveStride * count;
-
-		if (captureSlabOffset + len > CAPTURE_SLAB_SIZE) captureSlabOffset = 0; 
-
-		ret.buf = captureSlab.subarray(captureSlabOffset, captureSlabOffset + len);
-
 		var heapView = getWasmHeapView(v.buffer);
-		ret.buf.set(heapView.subarray(data.pointer, data.pointer + len));
-		
-		captureSlabOffset += len;
+		ret.buf = new Uint8Array(heapView.subarray(data.pointer, data.pointer + len));
 	}
 	return ret;
 }
@@ -484,21 +446,19 @@ let lockedMousePos = null;
 glCanvas.addEventListener("mousemove", evt => {
 	let [x, y] = convertMousePos(evt.offsetX, evt.offsetY);
 
-	// If the pointer is locked, we can't use offsetX/offsetY
 	if (lockedMousePos) {
 		x = lockedMousePos.x += evt.movementX;
 		y = lockedMousePos.y += evt.movementY;
 
 		if (!document.pointerLockElement) {
-			// Game still wants the pointer locked, but it's not
 			Java_org_lwjgl_opengl_LinuxDisplay_nGrabPointer();
 		}
 	}
 
-	if (eventQueue[0]?.type == evt.type) {
-		// Update unhandled event
-		eventQueue[0].x = x;
-		eventQueue[0].y = y;
+	const lastEvent = eventQueue[eventQueue.length - 1];
+	if (lastEvent?.type === evt.type) {
+		lastEvent.x = x;
+		lastEvent.y = y;
 	} else {
 		eventQueue.push({ type: evt.type, x, y });
 	}
@@ -584,7 +544,19 @@ function getTextureData(v, memPtr, width, height, format, type)
     if (type === 0x1406 /* FLOAT */) bpp *= 4;
 
     const size = width * height * bpp;
-    return getWasmHeapView(v.buffer).subarray(ptr, ptr + size);
+    const src = getWasmHeapView(v.buffer).subarray(ptr, ptr + size);
+
+    if (format === 0x80E1 /* GL_BGRA */) {
+        scratchTextureBuf.set(src);
+        for (let i = 0; i < size; i += 4) {
+            let b = scratchTextureBuf[i];
+            scratchTextureBuf[i] = scratchTextureBuf[i + 2];
+            scratchTextureBuf[i + 2] = b;
+        }
+        return scratchTextureBuf.subarray(0, size);
+    }
+
+    return src;
 }
 
 function translateGLFormat(f) { return (f === 0x80E1 /* BGRA */) ? glCtx.RGBA : f; }
@@ -594,6 +566,16 @@ function translateInternalFormat(i)
     if (i === 4 || i === 0x8058) return glCtx.RGBA;
     if (i === 3 || i === 0x8051) return glCtx.RGB;
     return i;
+}
+
+function getBufferAddr(buf)
+{
+    if (typeof buf === "number") return buf;
+    if (!buf) return 0;
+    if (buf.__addr !== undefined) return buf.__addr;
+    if (buf.d !== undefined) return buf.d;
+    if (typeof buf.address === "number") return buf.address;
+    return 0;
 }
 
 function Java_org_lwjgl_DefaultSysImplementation_getPointerSize()
@@ -1024,8 +1006,6 @@ function Java_org_lwjgl_opengl_GL11_nglTexImage2D(lib, target, level, internalFo
     textureWidths[boundId] = width;
     textureHeights[boundId] = height;
 
-    glCtx.uniform1f(bgraLocation, (format === 0x80E1 /* GL_BGRA */) ? 1.0 : 0.0);
-
     glCtx.pixelStorei(glCtx.UNPACK_ALIGNMENT, 1);
     glCtx.texImage2D(target, level, glInt, width, height, border, glFmt, glTyp, buf);
 
@@ -1325,8 +1305,6 @@ function Java_org_lwjgl_opengl_GL11_nglTexSubImage2D(lib, target, level, xoffset
     const glFmt = translateGLFormat(format);
     const glTyp = translateGLType(type);
 
-    glCtx.uniform1f(bgraLocation, (format === 0x80E1 /* GL_BGRA */) ? 1.0 : 0.0);
-
     glCtx.pixelStorei(glCtx.UNPACK_ALIGNMENT, 1);
     glCtx.texSubImage2D(target, level, xoffset, yoffset, width, height, glFmt, glTyp, buf);
 }
@@ -1561,69 +1539,53 @@ function Java_org_lwjgl_opengl_GL11_nglVertex3f(lib, x, y, z, funcPtr)
 
 function Java_org_lwjgl_opengl_GL11_nglEnd(lib, funcPtr)
 {
-	checkNoList(curList);
-	var count = immediateModeData.vertexPos / 3;
+    checkNoList(curList);
+    var count = immediateModeData.vertexPos / 3;
 
-	let offset = 0;
-	let vBytes = immediateModeData.vertexPos * 4;
-	let cBytes = immediateModeData.colorPos * 4;
-	let tBytes = immediateModeData.texCoordPos * 4;
-	let nBytes = immediateModeData.normalPos * 4;
-	
-	let vOffset = offset;
-	batchBuffer.set(immediateVertexView.subarray(0, vBytes), offset);
-	offset += vBytes;
-	
-	let cOffset = offset;
-	batchBuffer.set(immediateColorView.subarray(0, cBytes), offset);
-	offset += cBytes;
-	
-	let tOffset = offset;
-	if (tBytes > 0)
-	{
-		batchBuffer.set(immediateTexCoordView.subarray(0, tBytes), offset);
-		offset += tBytes;
-	}
+    let offset = 0;
+    let vBytes = immediateModeData.vertexPos * 4;
+    let cBytes = immediateModeData.colorPos * 4;
+    let tBytes = immediateModeData.texCoordPos * 4;
+    let nBytes = immediateModeData.normalPos * 4;
 
-	let nOffset = offset;
-	if (nBytes > 0)
-	{
-		batchBuffer.set(immediateNormalView.subarray(0, nBytes), offset);
-		offset += nBytes;
-	}
-	
-	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
-	glCtx.bufferSubData(glCtx.ARRAY_BUFFER, 0, batchBuffer, 0, offset);
-	
-	glCtx.vertexAttribPointer(vertexPosition, 3, glCtx.FLOAT, false, 0, vOffset);
-	glCtx.enableVertexAttribArray(vertexPosition);
-	
-	glCtx.vertexAttribPointer(colorLocation, 4, glCtx.FLOAT, false, 0, cOffset);
-	glCtx.enableVertexAttribArray(colorLocation);
-	
-	if (tBytes > 0)
-	{
-		glCtx.vertexAttribPointer(texCoord, 2, glCtx.FLOAT, false, 0, tOffset);
-		glCtx.enableVertexAttribArray(texCoord);
-	}
-	else
-	{
-		glCtx.disableVertexAttribArray(texCoord);
-		glCtx.vertexAttrib2f(texCoord, 0, 0);
-	}
+    glCtx.bindBuffer(glCtx.ARRAY_BUFFER, singleVBO);
 
-	if (nBytes > 0)
-	{
-		glCtx.vertexAttribPointer(normalLocation, 3, glCtx.FLOAT, false, 0, nOffset);
-		glCtx.enableVertexAttribArray(normalLocation);
-	}
-	else
-	{
-		glCtx.disableVertexAttribArray(normalLocation);
-		glCtx.vertexAttrib3f(normalLocation, 0.0, 0.0, 1.0);
-	}
+    glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, immediateVertexView, 0, vBytes);
+    glCtx.vertexAttribPointer(vertexPosition, 3, glCtx.FLOAT, false, 0, offset);
+    glCtx.enableVertexAttribArray(vertexPosition);
+    offset += vBytes;
 
-	drawArraysImpl(immediateModeData.mode, 0, count);
+    glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, immediateColorView, 0, cBytes);
+    glCtx.vertexAttribPointer(colorLocation, 4, glCtx.FLOAT, false, 0, offset);
+    glCtx.enableVertexAttribArray(colorLocation);
+    offset += cBytes;
+
+    if (tBytes > 0)
+    {
+        glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, immediateTexCoordView, 0, tBytes);
+        glCtx.vertexAttribPointer(texCoord, 2, glCtx.FLOAT, false, 0, offset);
+        glCtx.enableVertexAttribArray(texCoord);
+        offset += tBytes;
+    }
+    else
+    {
+        glCtx.disableVertexAttribArray(texCoord);
+        glCtx.vertexAttrib2f(texCoord, 0, 0);
+    }
+
+    if (nBytes > 0)
+    {
+        glCtx.bufferSubData(glCtx.ARRAY_BUFFER, offset, immediateNormalView, 0, nBytes);
+        glCtx.vertexAttribPointer(normalLocation, 3, glCtx.FLOAT, false, 0, offset);
+        glCtx.enableVertexAttribArray(normalLocation);
+    }
+    else
+    {
+        glCtx.disableVertexAttribArray(normalLocation);
+        glCtx.vertexAttrib3f(normalLocation, 0.0, 0.0, 1.0);
+    }
+
+    drawArraysImpl(immediateModeData.mode, 0, count);
 }
 
 // These stubs make sure audio creation fails sooner rather than later
@@ -1656,12 +1618,14 @@ async function Java_org_lwjgl_opengl_LinuxEvent_createEventBuffer(lib)
 {
 	// This is intended to represent a X11 event, but we are free to use any layout
 	var ByteBuffer = await lib.java.nio.ByteBuffer;
-	return await ByteBuffer.allocateDirect(4 * 8);
+	var buf = await ByteBuffer.allocateDirect(4 * 8);
+	buf.__addr = Number(await buf.address());
+	return buf;
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nNextEvent(lib, windowId, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nNextEvent(lib, windowId, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	var v = lib.getJNIDataView();
 	var e = eventQueue.shift();
 
@@ -1711,9 +1675,9 @@ function Java_org_lwjgl_opengl_LinuxEvent_nGetWindow()
 	return 0;
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetType(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetType(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 0, true);
 }
 
@@ -1730,27 +1694,27 @@ function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonRoot()
 {
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonXRoot(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonXRoot(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 4, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonYRoot(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonYRoot(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 8, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonX(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonX(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 4, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonY(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonY(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 8, true);
 }
 
@@ -1758,15 +1722,15 @@ function Java_org_lwjgl_opengl_LinuxEvent_nGetFocusDetail()
 {
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonType(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonType(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 0, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonButton(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetButtonButton(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 12, true);
 }
 
@@ -1819,9 +1783,9 @@ function Java_org_lwjgl_opengl_LinuxEvent_nSendEvent()
 {
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyAddress(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyAddress(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 4, true);
 }
 
@@ -1830,21 +1794,21 @@ function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyTime()
 	// TODO: Event timestamps
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyType(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyType(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 0, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyKeyCode(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyKeyCode(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	return lib.getJNIDataView().getInt32(bufferAddr + 4, true);
 }
 
-async function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyState(lib, buffer)
+function Java_org_lwjgl_opengl_LinuxEvent_nGetKeyState(lib, buffer)
 {
-	var bufferAddr = Number(await buffer.address());
+	var bufferAddr = getBufferAddr(buffer);
 	var type = lib.getJNIDataView().getInt32(bufferAddr + 0, true);
 	return (type === 2) ? 1 : 0;
 }
@@ -1859,18 +1823,17 @@ function Java_org_lwjgl_opengl_LinuxContextImplementation_nReleaseCurrentContext
     return 1;
 }
 
-async function Java_org_lwjgl_opengl_LinuxKeyboard_lookupString(lib, eventPtr, buffer)
+function Java_org_lwjgl_opengl_LinuxKeyboard_lookupString(lib, eventPtr, buffer)
 {
 	var charCode = Number(eventPtr);
 	if (charCode >= 32 && charCode <= 126) {
-		var bufferAddr = Number(await buffer.address());
+		var bufferAddr = getBufferAddr(buffer);
 		var v = lib.getJNIDataView();
 		v.setInt8(bufferAddr, charCode);
 		return 1;
 	}
 	return 0;
 }
-
 export default {
 	Java_org_lwjgl_DefaultSysImplementation_getPointerSize,
 	Java_org_lwjgl_DefaultSysImplementation_getJNIVersion,
