@@ -386,13 +386,72 @@ function drawArraysImpl(mode, first, count)
 }
 function pushDrawArraysInList(list, v, mode, first, count)
 {
-	var args = [mode, first, count, captureData(v, vertexData, count), captureData(v, colorData, count), captureData(v, texCoordData, count), captureData(v, normalData, count)];
-	list.push({f: drawArraysInList, a: args});
+	var vCap = captureData(v, vertexData, count);
+	var cCap = captureData(v, colorData, count);
+	var tCap = captureData(v, texCoordData, count);
+	var nCap = captureData(v, normalData, count);
+
+	var vSize = vCap.enabled ? getEffectiveStride(vCap) * count : 0;
+	var cSize = cCap.enabled ? getEffectiveStride(cCap) * count : 0;
+	var tSize = tCap.enabled ? getEffectiveStride(tCap) * count : 0;
+	var nSize = nCap.enabled ? getEffectiveStride(nCap) * count : 0;
+
+	var gpuBuf = glCtx.createBuffer();
+	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, gpuBuf);
+
+	var packed = new Uint8Array(vSize + cSize + tSize + nSize);
+	var offset = 0;
+	if (vCap.enabled) { packed.set(vCap.buf, offset); offset += vSize; }
+	if (cCap.enabled) { packed.set(cCap.buf, offset); offset += cSize; }
+	if (tCap.enabled) { packed.set(tCap.buf, offset); offset += tSize; }
+	if (nCap.enabled) { packed.set(nCap.buf, offset); offset += nSize; }
+
+	glCtx.bufferData(glCtx.ARRAY_BUFFER, packed, glCtx.STATIC_DRAW);
+
+	list.push({
+		f: drawArraysInList,
+		a: [mode, first, count, vCap, cCap, tCap, nCap, vSize, cSize, tSize, gpuBuf],
+		gpuBuf: gpuBuf
+	});
 }
-function drawArraysInList(mode, first, count, capturedVertexData, capturedColorData, capturedTexCoordData, capturedNormalData)
+function drawArraysInList(mode, first, count, vCap, cCap, tCap, nCap, vSize, cSize, tSize, gpuBuf)
 {
-    uploadAllData(null, count, capturedVertexData, capturedColorData, capturedTexCoordData, capturedNormalData);
-    drawArraysImpl(mode, first, count);
+	glCtx.bindBuffer(glCtx.ARRAY_BUFFER, gpuBuf);
+	var offset = 0;
+
+	if (vCap.enabled) {
+		glCtx.vertexAttribPointer(vertexPosition, vCap.size, vCap.type, vCap.type !== glCtx.FLOAT, vCap.stride, offset);
+		glCtx.enableVertexAttribArray(vertexPosition);
+		offset += vSize;
+	} else {
+		glCtx.disableVertexAttribArray(vertexPosition);
+	}
+
+	if (cCap.enabled) {
+		glCtx.vertexAttribPointer(colorLocation, cCap.size, cCap.type, cCap.type !== glCtx.FLOAT, cCap.stride, offset);
+		glCtx.enableVertexAttribArray(colorLocation);
+		offset += cSize;
+	} else {
+		glCtx.disableVertexAttribArray(colorLocation);
+	}
+
+	if (tCap.enabled) {
+		glCtx.vertexAttribPointer(texCoord, tCap.size, tCap.type, tCap.type !== glCtx.FLOAT, tCap.stride, offset);
+		glCtx.enableVertexAttribArray(texCoord);
+		offset += tSize;
+	} else {
+		glCtx.disableVertexAttribArray(texCoord);
+		glCtx.vertexAttrib2f(texCoord, 0, 0);
+	}
+
+	if (nCap.enabled) {
+		glCtx.vertexAttribPointer(normalLocation, nCap.size, nCap.type, nCap.type !== glCtx.FLOAT, nCap.stride, offset);
+		glCtx.enableVertexAttribArray(normalLocation);
+	} else {
+		glCtx.disableVertexAttribArray(normalLocation);
+	}
+
+	drawArraysImpl(mode, first, count);
 }
 // Fix the sampler to texture unit 0
 glCtx.uniform1i(samplerLocation, 0);
@@ -1135,7 +1194,7 @@ function Java_org_lwjgl_opengl_GL11_nglNewList(lib, list, mode, funcPtr)
 	checkNoList(curList);
 	assert(mode == 0x1300/*GL_COMPILE*/);
 	curList = cmdLists[list];
-	// Wipe out the current contents of the list if any
+	for (var i = 0; i < curList.length; i++) if (curList[i].gpuBuf) glCtx.deleteBuffer(curList[i].gpuBuf);
 	curList.length = 0;
 }
 
