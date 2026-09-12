@@ -170,7 +170,7 @@ def generate_offline_bundle():
           await initFiles.createDirectories(appTarget.getParent());
           await initFiles.copy(await initPaths.get(srcPath), appTarget, [initCopyOption.REPLACE_EXISTING]);
 
-          if (filename === "lwjgl.js" || filename === "jawt.js") {
+          if (filename === "lwjgl.js" || filename === "jawt.js" || filename === "netlib.js") {
             const nativeTarget = await initPaths.get(`/app/natives/${filename}`);
             await initFiles.createDirectories(nativeTarget.getParent());
             await initFiles.copy(await initPaths.get(srcPath), nativeTarget, [initCopyOption.REPLACE_EXISTING]);

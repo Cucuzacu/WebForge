@@ -1,1 +1,1 @@
-StupidForgeLauncher.java is compiled and injected directly into the original jar.
+StupidForgeLauncher.java and NetLib are compiled and injected directly into the original jar.

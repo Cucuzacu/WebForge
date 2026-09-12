@@ -570,12 +570,12 @@ function translateInternalFormat(i)
 
 function getBufferAddr(buf)
 {
-    if (typeof buf === "number") return buf;
-    if (!buf) return 0;
-    if (buf.__addr !== undefined) return buf.__addr;
-    if (buf.d !== undefined) return buf.d;
-    if (typeof buf.address === "number") return buf.address;
-    return 0;
+	if (typeof buf === "number") return buf;
+	if (!buf) return 0;
+	if (buf.__addr !== undefined) return buf.__addr;
+	if (buf.d !== undefined) return buf.d;
+	if (typeof buf.address === "number") return buf.address;
+	return 0;
 }
 
 function Java_org_lwjgl_DefaultSysImplementation_getPointerSize()
@@ -1823,17 +1823,21 @@ function Java_org_lwjgl_opengl_LinuxContextImplementation_nReleaseCurrentContext
     return 1;
 }
 
-function Java_org_lwjgl_opengl_LinuxKeyboard_lookupString(lib, eventPtr, buffer)
+async function Java_org_lwjgl_opengl_LinuxKeyboard_lookupString(lib, eventPtr, buffer)
 {
 	var charCode = Number(eventPtr);
 	if (charCode >= 32 && charCode <= 126) {
 		var bufferAddr = getBufferAddr(buffer);
+		if (!bufferAddr && buffer && typeof buffer.address === "function") {
+			bufferAddr = Number(await buffer.address());
+		}
 		var v = lib.getJNIDataView();
 		v.setInt8(bufferAddr, charCode);
 		return 1;
 	}
 	return 0;
 }
+
 export default {
 	Java_org_lwjgl_DefaultSysImplementation_getPointerSize,
 	Java_org_lwjgl_DefaultSysImplementation_getJNIVersion,

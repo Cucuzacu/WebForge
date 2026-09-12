@@ -1,8 +1,11 @@
 import java.io.File;
+import com.cucuzacu.netlib.NetLib;
 
 public class StupidForgeLauncher {
     public static void main(String[] args) {
         boolean created = false;
+
+	NetLib.init();
 
         File gameDir = new File("game");
         if (!gameDir.exists()) {
